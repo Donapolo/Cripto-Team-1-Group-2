@@ -1,0 +1,18 @@
+{
+    "historial": [
+        {
+            "fecha": "2026-10-17 10:10:50",
+            "accion": "cifrar_archivo",
+            "resultado_contenido": "Contenido intacto.",
+            "resultado_llaves": "Estructura de llaves intacta.",
+            "resultado_password": true
+        },
+        {
+            "fecha": "2026-10-17 10:10:50",
+            "accion": "descifrar_archivo",
+            "resultado_contenido": "Alerta, el contenido del campo 'nombre' cambio.",
+            "resultado_llaves": "Estructura de llaves intacta.",
+            "resultado_password": true
+        }
+    ]
+}
