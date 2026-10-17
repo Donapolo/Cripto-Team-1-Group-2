@@ -47,7 +47,7 @@ def registrar_estado(datos_json, accion, res_contenido, res_llaves, res_password
     historial=datos_json.get("historial", [])
         
     
-    nuevo_registro = {
+    nuevo_registro={
         "fecha": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "accion": accion,
         "resultado_contenido": res_contenido,
@@ -64,7 +64,7 @@ def registrar_estado(datos_json, accion, res_contenido, res_llaves, res_password
 def guardar_json(ruta_archivo, datos_nuevos):
     """Guarda en JSON mezclando lo nuevo con lo viejo (sin borrar nada)."""
     
-    datos_viejos = leer_json(ruta_archivo)
+    datos_viejos=leer_json(ruta_archivo)
     
     
     datos_viejos.update(datos_nuevos)
