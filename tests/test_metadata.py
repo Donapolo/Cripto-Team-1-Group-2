@@ -9,9 +9,7 @@ from metadata import (
     registrar_estado
 )
 
-# =====================================================================
-# PRUEBAS (Para 'pytest')
-# =====================================================================
+
 @pytest.fixture
 def metadatos_originales():
     return {
@@ -48,9 +46,7 @@ def test_4_registrar_estado_extrae_los_3_campos(metadatos_originales):
     assert registro["encryption_parameters"] == "nonce_123"
 
 
-# =====================================================================
-# MAIN (Para probar manualmente)
-# =====================================================================
+
 if __name__ == "__main__":
     print("=== 🧪 GENERANDO JSON CON NOMBRE FORZADO ===")
     
