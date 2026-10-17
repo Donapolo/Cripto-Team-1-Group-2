@@ -1,133 +1,90 @@
-import json
+import pytest
 import os
-from datetime import datetime
+import json
+from metadata import (
+    comprobar_contenido, 
+    comprobar_llaves, 
+    guardar_json, 
+    leer_json, 
+    registrar_estado
+)
 
-def leer_json(ruta_archivo):
-    """Abre un archivo JSON y devuelve absolutamente todo, si no existe, da vacío."""
-    if not os.path.exists(ruta_archivo):
-        return {}
-    with open(ruta_archivo, "r", encoding="utf-8") as archivo:
-        return json.load(archivo)
+# =====================================================================
+# PRUEBAS (Para 'pytest')
+# =====================================================================
+@pytest.fixture
+def metadatos_originales():
+    return {
+        "filename": "documento_legal.pdf",
+        "algorithm_version": "AES-256-GCM",
+        "encryption_parameters": "nonce_123",
+        "creation_timestamp": "2026-10-17T10:00:00Z"
+    }
 
-def comprobar_contenido(datos_viejos, datos_nuevos):
-    """Compara el contenido (no guarda, solo avisa si cambió)."""
-    for campo in datos_viejos.keys():
-        valor_viejo=datos_viejos.get(campo)
-        valor_nuevo=datos_nuevos.get(campo)
-        
-        if valor_viejo!=valor_nuevo:
-            return f"Alerta, el contenido del campo '{campo}' cambio."
-            
-    return "Contenido intacto."
+def test_1_metadatos_intactos(metadatos_originales):
+    metadatos_nuevos = metadatos_originales.copy()
+    assert comprobar_contenido(metadatos_originales, metadatos_nuevos) == "Contenido intacto."
+    assert comprobar_llaves(metadatos_originales, metadatos_nuevos) == "Estructura de llaves intacta."
 
+def test_2_metadatos_modificados_fallan(metadatos_originales):
+    metadatos_hackeados = metadatos_originales.copy()
+    metadatos_hackeados["filename"] = "../../etc/passwd"
+    resultado = comprobar_contenido(metadatos_originales, metadatos_hackeados)
+    assert "Alerta" in resultado
+    assert "filename" in resultado
 
-def comprobar_llaves(datos_viejos, datos_nuevos):
-    """Compara las llaves."""
-    llaves_viejas=list(datos_viejos.keys())
-    llaves_nuevas=list(datos_nuevos.keys())
+def test_3_llaves_borradas_fallan(metadatos_originales):
+    metadatos_hackeados = metadatos_originales.copy()
+    del metadatos_hackeados["algorithm_version"]
+    resultado = comprobar_llaves(metadatos_originales, metadatos_hackeados)
+    assert "Alerta" in resultado
+
+def test_4_registrar_estado_extrae_los_3_campos(metadatos_originales):
+    estado = registrar_estado(metadatos_originales, "cifrar", "OK", "OK", True)
+    registro = estado["historial"][0]
     
-    if llaves_viejas==llaves_nuevas:
-        return "Estructura de llaves intacta."
-    else:
-        return "Alerta, las llaves no concuerdan."
+    assert registro["filename"] == "documento_legal.pdf"
+    assert registro["algorithm_version"] == "AES-256-GCM"
+    assert registro["encryption_parameters"] == "nonce_123"
 
 
-def comprobar_contraseña(datos_json, contraseña_ingresada):
-    """Saca la contraseña del JSON y la compara."""
-    contraseña_guardada=datos_json.get("contraseña")
-    if contraseña_guardada is None:
-        return "Error, no hay contraseña en el JSON"
-        
-    return contraseña_ingresada==contraseña_guardada
-
-
-def registrar_estado(datos_json, accion, res_contenido, res_llaves, res_password):
-    """Recibe los resultados de las comprobaciones anteriores y los guarda."""
+# =====================================================================
+# MAIN (Para probar manualmente)
+# =====================================================================
+if __name__ == "__main__":
+    print("=== 🧪 GENERANDO JSON CON NOMBRE FORZADO ===")
     
-    historial=datos_json.get("historial", [])
-        
-    
-    nuevo_registro={
-        "fecha": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "accion": accion,
-        "resultado_contenido": res_contenido,
-        "resultado_llaves": res_llaves,
-        "resultado_password": res_password
+    # 1. Simulamos los datos
+    datos_originales = {
+        "filename": "foto_privada.jpg",
+        "algorithm_version": "AES-256-GCM",
+        "encryption_parameters": "nonce=1234, tag=abcd",
+        "contraseña": "123"
     }
     
+    datos_hackeados = datos_originales.copy()
+    datos_hackeados["filename"] = "virus.exe"
     
-    historial.append(nuevo_registro)
+    # 2. Comprobamos
+    res_cont = comprobar_contenido(datos_originales, datos_hackeados)
+    res_llav = comprobar_llaves(datos_originales, datos_hackeados)
     
-    return {"historial": historial}
-
-
-def guardar_json(estado_nuevo, ruta_archivo="metadata.json"):
-    """Guarda en JSON mezclando lo nuevo con lo viejo (sin borrar nada)."""
+    # 3. Armamos el estado
+    estado = registrar_estado(
+        datos_json=datos_originales, 
+        accion="intento_de_descifrado", 
+        res_contenido=res_cont, 
+        res_llaves=res_llav, 
+        res_password=True
+    )
     
-    datos_existentes=leer_json(ruta_archivo)
-
-    if not datos_existentes:
-        resultado=estado_nuevo
-
-    else:
-        historial_viejo = datos_existentes.get("historial", [])
-        historial_nuevo = estado_nuevo.get("historial", [])
-        datos_existentes.update(estado_nuevo)
-        datos_existentes["historial"] = historial_viejo + historial_nuevo
-        resultado=datos_existentes
-    
-    
-    with open(ruta_archivo, "w", encoding="utf-8") as archivo:
-        json.dump(resultado, archivo, indent=4)
+    # 4. Guardamos (¡Ya no le pasamos la ruta, se guarda solo en metadata.json!)
+    print("\n--- Guardando en JSON ---")
+    if os.path.exists("metadata.json"):
+        os.remove("metadata.json") # Limpiamos por si ya existía
         
-    return "Guardado exitoso (historial actualizado)"
-
-
-
-"""
-
-if __name__ == "__main__":
-    import os
+    print(guardar_json(estado))
     
-    # Ruta del archivo para las pruebas
-    ruta_prueba = "metadata.json"
-    
-    # Limpiamos el archivo si ya existía de pruebas anteriores
-    if os.path.exists(ruta_prueba):
-        os.remove(ruta_prueba)
-        
-    print("=== 🧪 PRUEBA 1: Creando el archivo desde cero ===")
-    
-    # Datos simulados
-    datos_originales = {"nombre": "archivo.txt", "version": 1.0, "contraseña": "123"}
-    datos_nuevos = {"nombre": "archivo.txt", "version": 1.0, "contraseña": "123"}
-    
-    # Comprobamos (todo debería estar bien)
-    res_contenido = comprobar_contenido(datos_originales, datos_nuevos)
-    res_llaves = comprobar_llaves(datos_originales, datos_nuevos)
-    res_password = comprobar_contraseña(datos_nuevos, "123")
-    
-    # Registramos y guardamos
-    estado_nuevo = registrar_estado(datos_nuevos, "cifrar_archivo", res_contenido, res_llaves, res_password)
-    print(guardar_json(estado_nuevo, ruta_prueba))
-    print("Contenido actual en el JSON:", leer_json(ruta_prueba))
-    
-    
-    print("\n=== 🧪 PRUEBA 2: Añadiendo otro registro (sin borrar el anterior) ===")
-    
-    # Simulamos que un hacker modificó el nombre del archivo
-    datos_hackeados = {"nombre": "virus.exe", "version": 1.0, "contraseña": "123"}
-    
-    # Comprobamos (el contenido debería marcar alerta)
-    res_contenido_hack = comprobar_contenido(datos_originales, datos_hackeados)
-    res_llaves_hack = comprobar_llaves(datos_originales, datos_hackeados)
-    res_password_hack = comprobar_contraseña(datos_hackeados, "123")
-    
-    # Registramos y guardamos de nuevo
-    estado_hackeado = registrar_estado(datos_hackeados, "descifrar_archivo", res_contenido_hack, res_llaves_hack, res_password_hack)
-    print(guardar_json(estado_hackeado, ruta_prueba))
-    
-    print("\n¡Revisa tu explorador de archivos! Se debe haber creado 'metadata.json'")
-    print("Contenido final del JSON (nota cómo el historial tiene 2 registros):")
-    print(json.dumps(leer_json(ruta_prueba), indent=4))
-    """
+    # 5. Mostramos el resultado
+    print("\n¡Archivo generado exitosamente! Contenido:")
+    print(json.dumps(leer_json("metadata.json"), indent=4))
