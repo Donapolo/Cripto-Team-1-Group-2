@@ -33,8 +33,7 @@ def cifrado():
     return container, key
 
 
-
-# Bitacora de metadata (metadata.py)
+# Bitácora de metadata (metadata.py)
 
 def test_1_metadatos_intactos(metadatos_originales):
     metadatos_nuevos = metadatos_originales.copy()
@@ -109,18 +108,16 @@ def test_agregar_campo_a_metadata_es_rechazado(cifrado):
 
 def test_metadata_intacta_se_acepta(cifrado):
     container, key = cifrado
-    igual = json.loads(json.dumps(container))  # copia por serializacion
+    igual = json.loads(json.dumps(container))
     assert vault.decrypt(igual, key) == PLAINTEXT
 
 
-
-# Vault y bitacora
+# Vault y bitácora
 
 def test_bitacora_se_guarda_al_rechazar_metadata_alterada(cifrado, tmp_path):
     container, key = cifrado
     ruta = str(tmp_path / "metadata.json")
 
-    # 1. El vault rechaza el header alterado
     header_ok = container["header"]
     header_malo = copy.deepcopy(header_ok)
     header_malo["filename"] = "virus.exe"
@@ -129,7 +126,6 @@ def test_bitacora_se_guarda_al_rechazar_metadata_alterada(cifrado, tmp_path):
     with pytest.raises(DecryptionError):
         vault.decrypt(hackeado, key)
 
-    # 2. metadata.py registra el intento y lo guarda en disco
     estado = registrar_estado(
         datos_json=header_ok,
         accion="intento_descifrado_con_metadata_alterada",
@@ -140,7 +136,6 @@ def test_bitacora_se_guarda_al_rechazar_metadata_alterada(cifrado, tmp_path):
     estado["historial"][-1]["container"] = container
     assert guardar_json(estado, ruta) == "Guardado exitoso (historial actualizado)"
 
-    # 3. El archivo existe y trae lo esperado
     assert os.path.exists(ruta)
     registro = leer_json(ruta)["historial"][0]
     assert registro["filename"] == "documento_legal.pdf"
@@ -148,10 +143,8 @@ def test_bitacora_se_guarda_al_rechazar_metadata_alterada(cifrado, tmp_path):
     assert "filename" in registro["resultado_contenido"]
     assert registro["container"] == container
 
-    # 4. El contenedor guardado sigue siendo valido con la llave...
     assert vault.decrypt(registro["container"], key) == PLAINTEXT
 
-    # 5. Si alguien edita el JSON guardado, el vault lo rechaza
     editado = copy.deepcopy(registro["container"])
     editado["header"]["filename"] = "virus.exe"
     with pytest.raises(DecryptionError):
@@ -169,62 +162,3 @@ def test_historial_se_concatena_entre_guardados(cifrado, tmp_path):
 
     historial = leer_json(ruta)["historial"]
     assert [r["accion"] for r in historial] == ["intento_0", "intento_1", "intento_2"]
-
-
-
-# Demo manual:  python test_metadata.py
-def main():
-    print("Pruebas AAD")
-
-    # 1. Ciframos
-    contenedor, llave = vault.encrypt(b"foto privada", filename="foto_privada.jpg")
-    print("\n--- Contenedor generado ---")
-    print(json.dumps(contenedor, indent=4))
-
-    # 2. Descifrado normal
-    print("\n--- Descifrado con metadata intacta ---")
-    print("Resultado:", vault.decrypt(contenedor, llave))
-
-    # 3. Atacante cambia el filename
-    print("\n--- Atacante cambia filename a 'virus.exe' ---")
-    hackeado = copy.deepcopy(contenedor)
-    hackeado["header"]["filename"] = "virus.exe"
-    try:
-        vault.decrypt(hackeado, llave)
-        print("Fallo de seguridad, se aceptó metadata alterada")
-    except DecryptionError as e:
-        print(f"Rechazado: {e}")
-
-    # 4. Atacante cambia la version del algoritmo
-    print("\n--- Atacante cambia algorithm_version ---")
-    hackeado = copy.deepcopy(contenedor)
-    hackeado["header"]["algorithm_version"] = "AES-128-GCM/v0"
-    try:
-        vault.decrypt(hackeado, llave)
-        print("Fallo de seguridad, se aceptó metadata alterada")
-    except DecryptionError as e:
-        print(f"Rechazado: {e}")
-
-    # 5. Un solo JSON: bitacora + contenedor (la llave NO se guarda)
-    header_ok = contenedor["header"]
-    header_malo = copy.deepcopy(header_ok)
-    header_malo["filename"] = "virus.exe"
-
-    estado = registrar_estado(
-        datos_json=header_ok,
-        accion="intento_descifrado_con_metadata_alterada",
-        res_contenido=comprobar_contenido(header_ok, header_malo),
-        res_llaves=comprobar_llaves(header_ok, header_malo),
-        res_password="no aplica",
-    )
-    estado["historial"][-1]["container"] = contenedor
-
-    print("\n--- Guardando en metadata.json ---")
-    print(guardar_json(estado))
-
-    print("\n¡Archivo generado exitosamente! Contenido:")
-    print(json.dumps(leer_json("metadata.json"), indent=4))
-
-
-if __name__ == "__main__":
-    main()
