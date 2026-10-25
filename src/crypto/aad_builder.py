@@ -110,16 +110,17 @@ def validate_recipients(recipients):
 
         # id: formato permitido y unico
         rid = entrada["id"]
-        if not isinstance(rid, str) or not ID_REGEX.match(rid):
+        if not isinstance(rid, str) or not ID_REGEX.fullmatch(rid):
             raise ContainerFormatError(f"{donde}.id invalido")
         if rid in vistos:
             raise ContainerFormatError(f"{donde}.id duplicado")
         vistos.add(rid)
 
-        # llave envuelta: texto no vacio
+        # llave envuelta: hexadecimal canonico, no vacio
         llave = entrada["encrypted_key"]
         if not isinstance(llave, str) or not 0 < len(llave) <= MAX_ENCRYPTED_KEY_LEN:
             raise ContainerFormatError(f"{donde}.encrypted_key invalido")
+        leer_hex(llave, f"{donde}.encrypted_key")
 
         # key_id es opcional
         if "key_id" in entrada:

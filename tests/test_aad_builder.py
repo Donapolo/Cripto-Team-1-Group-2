@@ -112,6 +112,9 @@ def test_contenedor_valido_pasa_y_viaja_por_json():
     lambda c: c["recipients"][0].pop("encrypted_key"),
     lambda c: c["recipients"][0].update(id="../etc"),              # id con caracteres invalidos
     lambda c: c["recipients"][1].update(id="alice"),               # id duplicado
+    lambda c: c["recipients"][0].update(id="alice\n"),             # salto de linea final
+    lambda c: c["recipients"][0].update(encrypted_key="zz11"),     # llave no hex
+    lambda c: c["recipients"][0].update(encrypted_key="AA11"),     # hex en mayusculas
     lambda c: c.update(nonce="aaaa"),                              # nonce de tamano incorrecto
     lambda c: c.update(tag="aaaa"),                                # tag de tamano incorrecto
     lambda c: c.update(ciphertext="zz-no-es-hex"),
