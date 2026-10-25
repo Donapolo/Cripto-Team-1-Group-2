@@ -1,72 +1,28 @@
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from ecies import decrypt as ecies_decrypt
 
-from src.crypto.aad_builder import build_aad
-
-
-_NONCE_LEN = 12
-_TAG_LEN = 16
-
-
-def _validate_container(container: dict) -> None:
-    """
-    Validate the structural shape of a container before any crypto operation.
-
-    Raises ValueError with a descriptive message on any structural problem,
-    so callers get a controlled failure instead of a TypeError/KeyError.
-    """
-    if not isinstance(container, dict):
-        raise ValueError("Invalid container: expected a dict.")
-
-    for field in ("recipients", "nonce", "ciphertext", "tag"):
-        if field not in container:
-            raise ValueError(f"Invalid container: missing field '{field}'.")
-
-    if not isinstance(container["recipients"], list) or not container["recipients"]:
-        raise ValueError("Invalid container: 'recipients' must be a non-empty list.")
-
-    for i, rec in enumerate(container["recipients"]):
-        if not isinstance(rec, dict):
-            raise ValueError(f"Invalid container: recipient[{i}] must be a dict.")
-        if "id" not in rec or not isinstance(rec["id"], str):
-            raise ValueError(f"Invalid container: recipient[{i}]['id'] must be a string.")
-        if "encrypted_key" not in rec:
-            raise ValueError(f"Invalid container: recipient[{i}] missing 'encrypted_key'.")
-        try:
-            bytes.fromhex(rec["encrypted_key"])
-        except (ValueError, TypeError):
-            raise ValueError(
-                f"Invalid container: recipient[{i}]['encrypted_key'] is not valid hex."
-            )
-
-    for field in ("nonce", "ciphertext", "tag"):
-        try:
-            bytes.fromhex(container[field])
-        except (ValueError, TypeError):
-            raise ValueError(f"Invalid container: '{field}' is not valid hex.")
-
-    if len(bytes.fromhex(container["nonce"])) != _NONCE_LEN:
-        raise ValueError(f"Invalid container: 'nonce' must be {_NONCE_LEN} bytes.")
-
-    if len(bytes.fromhex(container["tag"])) != _TAG_LEN:
-        raise ValueError(f"Invalid container: 'tag' must be {_TAG_LEN} bytes.")
-
-    metadata = container.get("metadata", {})
-    if not isinstance(metadata, dict):
-        raise ValueError("Invalid container: 'metadata' must be a dict.")
+# Importamos las funciones y errores de Gabriel
+from src.crypto.aad_builder import (
+    aad_from_container,
+    validate_container,
+    ContainerFormatError
+)
 
 
 def decrypt_hybrid(container: dict, user_id: str, private_key: str) -> bytes:
     """
     Hybrid Decryption Engine (assigned to Jesús)
-    1. Validate the container structure (controlled rejection of malformed data).
+    1. Validate the container structure using Gabriel's strict schema.
     2. Deterministic lookup of user_id in the recipients list.
     3. DEK decryption using ECIES with the user's private key.
-    4. AAD reconstruction via aad_builder.build_aad().
+    4. AAD reconstruction via Gabriel's aad_builder.
     5. AES-GCM decryption (Fail-Closed policy).
     """
-    # 1. Structural validation
-    _validate_container(container)
+    # 1. Structural validation (using Gabriel's strict rules)
+    try:
+        validate_container(container)
+    except ContainerFormatError as e:
+        raise ValueError(f"Invalid container: {e}") from e
 
     # 2. Deterministic lookup of the user in the recipients list
     recipient_entry = None
@@ -89,8 +45,9 @@ def decrypt_hybrid(container: dict, user_id: str, private_key: str) -> bytes:
             "Decryption error: Incorrect private key or corrupted container."
         ) from e
 
-    # 4. Rebuild the canonical AAD via aad_builder
-    aad_data = build_aad(container.get("metadata", {}), container["recipients"])
+    # 4. Rebuild the canonical AAD using Gabriel's function
+    # (This re-validates the container internally and builds the AAD bytes)
+    aad_data = aad_from_container(container)
 
     # 5. Extract cryptographic components
     nonce = bytes.fromhex(container["nonce"])
