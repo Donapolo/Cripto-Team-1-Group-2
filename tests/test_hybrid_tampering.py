@@ -5,12 +5,15 @@ import pytest
 
 pytest.importorskip("ecies")
 from ecies.utils import generate_eth_key
+from cryptography.exceptions import InvalidTag
 
-from src.crypto.hybrid_vault import decrypt_hybrid, encrypt_hybrid 
+from src.crypto.aad_builder import ContainerFormatError
+from src.crypto.hybrid_vault import decrypt_hybrid, encrypt_hybrid
+
 
 PLAINTEXT = b"contenido confidencial compartido entre varios usuarios"
 FILENAME = "contrato.pdf"
-FALLO_CERRADO = Exception  # cambiar por la excepcion de decrypt_hybrid cuando Jesus la defina
+FALLO_CERRADO = (InvalidTag, ContainerFormatError, ValueError, KeyError)  # agregar la excepcion de decrypt_hybrid si Jesus define una propia
 
 
 # Datos de apoyo
@@ -138,8 +141,7 @@ def test_modificar_ciphertext_o_tag_falla(escenario):
     container, usuarios = escenario
     for campo in ("ciphertext", "tag", "nonce"):
         malo = clonar(container)
-        # el tag termina en "==", por eso se cambian los primeros caracteres
-        malo[campo] = "AAAA" + malo[campo][4:] if campo == "tag" else alterar_texto(malo[campo])
+        malo[campo] = alterar_texto(malo[campo])
         todos_fallan(malo, usuarios)
 
 

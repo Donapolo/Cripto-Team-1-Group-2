@@ -112,21 +112,20 @@ def test_contenedor_valido_pasa_y_viaja_por_json():
     lambda c: c["recipients"][0].pop("encrypted_key"),
     lambda c: c["recipients"][0].update(id="../etc"),              # id con caracteres invalidos
     lambda c: c["recipients"][1].update(id="alice"),               # id duplicado
-    lambda c: c.update(nonce="AAAA"),                              # nonce de tamano incorrecto
-    lambda c: c.update(tag="AAAA"),                                # tag de tamano incorrecto
-    lambda c: c.update(ciphertext="***no-es-b64***"),
-    lambda c: c.update(ciphertext=c["ciphertext"].rstrip("=") + "\n"),
+    lambda c: c.update(nonce="aaaa"),                              # nonce de tamano incorrecto
+    lambda c: c.update(tag="aaaa"),                                # tag de tamano incorrecto
+    lambda c: c.update(ciphertext="zz-no-es-hex"),
+    lambda c: c.update(ciphertext="abc"),                          # longitud impar
 ])
 def test_contenedor_malformado_se_rechaza(cambio):
     with pytest.raises(ContainerFormatError):
         validate_container(mutar(cambio))
 
 
-def test_base64_no_canonico_se_rechaza():
+def test_hex_no_canonico_se_rechaza():
     contenedor = contenedor_base()
-    # mismo contenido pero con bits de relleno distintos: decodifica igual y no es canonico
-    assert contenedor["tag"].endswith("Ag==")
-    contenedor["tag"] = contenedor["tag"][:-4] + "Ah=="
+    # mismo contenido en mayusculas: decodifica igual pero no es canonico
+    contenedor["ciphertext"] = contenedor["ciphertext"].upper()
     with pytest.raises(ContainerFormatError):
         validate_container(contenedor)
 
@@ -144,7 +143,6 @@ def test_load_container_rechaza_json_invalido():
 
 # Demo manual:  python -m tests.test_aad_builder   (desde la raiz del repo)
 def main():
-    import base64
     from cryptography.exceptions import InvalidTag
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
@@ -168,8 +166,8 @@ def main():
     def descifrar(cont):
         # mismo flujo del descifrado: validar, reconstruir AAD y abrir
         aad_nuevo = aad_from_container(cont)
-        crudo = base64.b64decode(cont["ciphertext"]) + base64.b64decode(cont["tag"])
-        return AESGCM(dek).decrypt(base64.b64decode(cont["nonce"]), crudo, aad_nuevo)
+        crudo = bytes.fromhex(cont["ciphertext"]) + bytes.fromhex(cont["tag"])
+        return AESGCM(dek).decrypt(bytes.fromhex(cont["nonce"]), crudo, aad_nuevo)
 
     # 3. Descifrado normal
     print("\nDescifrado con contenedor intacto")
