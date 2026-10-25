@@ -18,9 +18,12 @@ FALLO_CERRADO = (InvalidTag, ContainerFormatError, ValueError, KeyError)  # agre
 
 # Datos de apoyo
 
+import coincurve
+from eth_keys import keys
+
 def nuevo_usuario():
     """Devuelve (llave_publica_hex, llave_privada_hex)."""
-    llave = generate_eth_key()
+    llave = keys.PrivateKey(coincurve.utils.get_valid_secret())
     return llave.public_key.to_hex(), llave.to_hex()
 
 

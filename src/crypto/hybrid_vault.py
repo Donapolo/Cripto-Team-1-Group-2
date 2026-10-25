@@ -2,6 +2,7 @@ import os
 from typing import Union, List, Dict
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from ecies import decrypt as ecies_decrypt
+from coincurve import PublicKey as CoincurvePublicKey
 
 try:
     from src.crypto.aad_builder import (
@@ -29,6 +30,23 @@ except ModuleNotFoundError:
     from key_manager import ECIESKeyManager
 
 
+class IntegrityError(RuntimeError, ValueError):
+    """Raised when container decryption or integrity verification fails."""
+    pass
+
+
+def _ensure_compressed_public_key(pub_key_hex: str) -> str:
+    """Normalizes any secp256k1 public key to 33-byte compressed hex."""
+    clean_hex = pub_key_hex.removeprefix("0x")
+    raw = bytes.fromhex(clean_hex)
+    if len(raw) == 33 and raw[0] in (2, 3):
+        return clean_hex
+    if len(raw) == 64:
+        raw = b"\x04" + raw
+    pk = CoincurvePublicKey(raw)
+    return pk.format(compressed=True).hex()
+
+
 class HybridVault:
     DEK_SIZE_BYTES = 32  # 256-bit symmetric key for AES-GCM
 
@@ -45,12 +63,6 @@ class HybridVault:
         2. Encapsulates the DEK for each recipient via ECIESKeyManager (secp256k1).
         3. Constructs canonical metadata and builds AAD binding both metadata and recipients.
         4. Encrypts file bytes with AES-256-GCM and packages the output into a validated container.
-
-        :param file_bytes: Raw plaintext file bytes to encrypt.
-        :param filename: Original name of the payload file.
-        :param recipients: Either a dict {user_id: public_key_hex} or
-                           a list of dicts [{"id": user_id, "public_key": public_key_hex}, ...].
-        :return: Validated D3 container dictionary with hex-encoded fields.
         """
         if not isinstance(file_bytes, (bytes, bytearray)):
             raise TypeError("file_bytes must be raw bytes or bytearray.")
@@ -58,7 +70,8 @@ class HybridVault:
         # Normalize recipients to a mapping {user_id: public_key_hex}
         recipients_map: Dict[str, str] = {}
         if isinstance(recipients, dict):
-            recipients_map = recipients
+            for uid, pk in recipients.items():
+                recipients_map[uid] = _ensure_compressed_public_key(pk)
         elif isinstance(recipients, list):
             for entry in recipients:
                 if not isinstance(entry, dict) or "id" not in entry or "public_key" not in entry:
@@ -66,7 +79,7 @@ class HybridVault:
                 recipient_id = entry["id"]
                 if recipient_id in recipients_map:
                     raise ValueError(f"Duplicate recipient identifier detected: '{recipient_id}'.")
-                recipients_map[recipient_id] = entry["public_key"]
+                recipients_map[recipient_id] = _ensure_compressed_public_key(entry["public_key"])
         else:
             raise TypeError("recipients must be a dictionary or a list of dictionaries.")
 
@@ -105,7 +118,6 @@ class HybridVault:
         )
 
 
-# Alias a nivel de modulo por compatibilidad
 encrypt_hybrid = HybridVault.encrypt_hybrid
 
 
@@ -118,13 +130,11 @@ def decrypt_hybrid(container: dict, user_id: str, private_key: str) -> bytes:
     4. AAD reconstruction via Gabriel's aad_builder.
     5. AES-GCM decryption (Fail-Closed policy).
     """
-    # 1. Structural validation
     try:
         validate_container(container)
     except ContainerFormatError as e:
         raise ValueError(f"Invalid container: {e}") from e
 
-    # 2. Deterministic lookup of the user in the recipients list
     recipient_entry = None
     for rec in container["recipients"]:
         if rec["id"] == user_id:
@@ -136,7 +146,6 @@ def decrypt_hybrid(container: dict, user_id: str, private_key: str) -> bytes:
             f"Access denied: User '{user_id}' is not authorized for this container."
         )
 
-    # 3. Unpack and decrypt the DEK using ECIES and the private key
     try:
         enc_dek_bytes = bytes.fromhex(recipient_entry["encrypted_key"])
         dek = ecies_decrypt(private_key, enc_dek_bytes)
@@ -145,21 +154,18 @@ def decrypt_hybrid(container: dict, user_id: str, private_key: str) -> bytes:
             "Decryption error: Incorrect private key or corrupted container."
         ) from e
 
-    # 4. Rebuild the canonical AAD
     aad_data = aad_from_container(container)
 
-    # 5. Extract cryptographic components
     nonce = bytes.fromhex(container["nonce"])
     ciphertext = bytes.fromhex(container["ciphertext"])
     tag = bytes.fromhex(container["tag"])
     ciphertext_with_tag = ciphertext + tag
 
-    # 6. Decrypt the file with AES-GCM (Fail-Closed policy)
     aesgcm = AESGCM(dek)
     try:
         plaintext = aesgcm.decrypt(nonce, ciphertext_with_tag, aad_data)
     except Exception as e:
-        raise RuntimeError(
+        raise IntegrityError(
             "Integrity failure: The file or metadata has been tampered with."
         ) from e
 
