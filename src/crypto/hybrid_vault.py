@@ -1,95 +1,97 @@
 import os
-import json
-import base64
-from datetime import datetime, timezone
+from typing import Union, List, Dict
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-from ecies import encrypt as ecies_encrypt
+
+try:
+    from src.crypto.aad_builder import (
+        build_metadata,
+        build_aad,
+        build_container,
+        NONCE_SIZE,
+        TAG_SIZE,
+    )
+    from src.crypto.key_manager import ECIESKeyManager
+except ModuleNotFoundError:
+    from aad_builder import (
+        build_metadata,
+        build_aad,
+        build_container,
+        NONCE_SIZE,
+        TAG_SIZE,
+    )
+    from key_manager import ECIESKeyManager
 
 
 class HybridVault:
-    ALGORITHM_VERSION = "AES-256-GCM"
-    KEY_ENCAPSULATION = "ECIES-secp256k1"
-    NONCE_SIZE_BYTES = 12
-    TAG_SIZE_BYTES = 16
+    DEK_SIZE_BYTES = 32  # 256-bit symmetric key for AES-GCM
 
     @classmethod
-    def build_aad(cls, metadata: dict, recipients: list[dict]) -> bytes:
+    def encrypt_hybrid(
+        cls,
+        file_bytes: bytes,
+        filename: str,
+        recipients: Union[Dict[str, str], List[Dict[str, str]]],
+    ) -> dict:
         """
-        Constructs canonical Additional Authenticated Data (AAD).
-        Binds metadata and the recipient list to the GHASH tag to prevent
-        adversaries from adding, removing, or swapping recipient identities.
+        Encrypts payload using hybrid encryption adhering to the D3 specification:
+        1. Generates a fresh 256-bit AES-GCM Data Encryption Key (DEK).
+        2. Encapsulates the DEK for each recipient via ECIESKeyManager (secp256k1).
+        3. Constructs canonical metadata and builds AAD binding both metadata and recipients.
+        4. Encrypts file bytes with AES-256-GCM and packages the output into a validated container.
+
+        :param file_bytes: Raw plaintext file bytes to encrypt.
+        :param filename: Original name of the payload file.
+        :param recipients: Either a dict {user_id: public_key_hex} or
+                           a list of dicts [{"id": user_id, "public_key": public_key_hex}, ...].
+        :return: Validated D3 container dictionary with hex-encoded fields.
         """
-        aad_data = {
-            "metadata": metadata,
-            "recipients_identities": [
-                {"id": r["id"]} for r in recipients
-            ]
-        }
-        # Canonical JSON serialization ensures deterministic byte representation
-        return json.dumps(aad_data, sort_keys=True).encode("utf-8")
+        if not isinstance(file_bytes, (bytes, bytearray)):
+            raise TypeError("file_bytes must be raw bytes or bytearray.")
 
-    @classmethod
-    def encrypt_hybrid(cls, file_bytes: bytes, filename: str, recipients: list[dict]) -> dict:
-        """
-        Encrypts a file payload using hybrid encryption:
-        1. Encrypts file payload once with a random 256-bit symmetric key (DEK) using AES-GCM.
-        2. Encapsulates the DEK separately for each recipient using ECIES and their public key.
-        3. Authenticates metadata and recipient identities using AAD (Fail-Closed integrity).
+        # Normalize recipients to a mapping {user_id: public_key_hex}
+        recipients_map: Dict[str, str] = {}
+        if isinstance(recipients, dict):
+            recipients_map = recipients
+        elif isinstance(recipients, list):
+            for entry in recipients:
+                if not isinstance(entry, dict) or "id" not in entry or "public_key" not in entry:
+                    raise ValueError("Each recipient in list must contain 'id' and 'public_key'.")
+                recipients_map[entry["id"]] = entry["public_key"]
+        else:
+            raise TypeError("recipients must be a dictionary or a list of dictionaries.")
 
-        :param file_bytes: Raw file content to encrypt.
-        :param filename: Original name of the target file.
-        :param recipients: List of recipient dictionaries:
-                           [{"id": "user_id", "public_key": "hex_or_bytes"}, ...]
-        :return: Structured D3 container dictionary.
-        """
-        # Rubric requirement: Support at least 2 recipients
-        if not recipients or len(recipients) < 2:
-            raise ValueError("Encryption requires at least 2 authorized recipients.")
+        # Security requirement: Enforce multi-recipient encryption (minimum 2 recipients)
+        if len(recipients_map) < 2:
+            raise ValueError("Encryption requires at least 2 distinct authorized recipients.")
 
-        # Step 1: Generate a single-use 256-bit Data Encryption Key (DEK) via OS CSPRNG
-        dek = AESGCM.generate_key(bit_length=256)
+        # Step 1: Generate a single-use 256-bit DEK using the OS CSPRNG
+        dek = os.urandom(cls.DEK_SIZE_BYTES)
 
-        # Step 2: Encapsulate the DEK for each recipient using ECIES (Elliptic Curve Integrated Encryption Scheme)
-        encrypted_recipients = []
-        for r in recipients:
-            user_id = r["id"]
-            public_key = r["public_key"]
+        # Step 2: Encapsulate DEK for all recipients using ECIESKeyManager
+        # Output contains: [{"id": ..., "key_id": ..., "encrypted_key": ...}, ...] in canonical hex
+        recipient_entries = ECIESKeyManager.encrypt_dek_for_recipients(dek, recipients_map)
 
-            # Encrypt the symmetric DEK using the recipient's public key
-            encrypted_dek = ecies_encrypt(public_key, dek)
+        # Step 3: Construct metadata according to aad_builder schema
+        metadata = build_metadata(filename=filename)
 
-            encrypted_recipients.append({
-                "id": user_id,
-                "encrypted_key": base64.b64encode(encrypted_dek).decode("utf-8")
-            })
+        # Step 4: Generate canonical AAD binding metadata and recipient entries
+        # Secures both metadata and encapsulated keys against ciphertext/recipient tampering
+        aad_bytes = build_aad(metadata, recipient_entries)
 
-        # Step 3: Populate container metadata
-        metadata = {
-            "version": cls.ALGORITHM_VERSION,
-            "key_encapsulation": cls.KEY_ENCAPSULATION,
-            "filename": filename,
-            "timestamp": datetime.now(timezone.utc).isoformat()
-        }
-
-        # Step 4: Build AAD payload binding metadata and recipient IDs
-        aad_bytes = cls.build_aad(metadata, encrypted_recipients)
-
-        # Step 5: Perform symmetric encryption using AES-256-GCM with a unique 96-bit nonce
-        nonce = os.urandom(cls.NONCE_SIZE_BYTES)
+        # Step 5: Perform AES-256-GCM authenticated encryption
+        nonce = os.urandom(NONCE_SIZE)
         aesgcm = AESGCM(dek)
-        ciphertext_with_tag = aesgcm.encrypt(nonce, file_bytes, aad_bytes)
+        ciphertext_with_tag = aesgcm.encrypt(nonce, bytes(file_bytes), aad_bytes)
 
-        # Step 6: Separate ciphertext and the 16-byte GHASH authentication tag
-        ciphertext = ciphertext_with_tag[:-cls.TAG_SIZE_BYTES]
-        tag = ciphertext_with_tag[-cls.TAG_SIZE_BYTES:]
+        # Step 6: Separate ciphertext and GHASH authentication tag
+        ciphertext = ciphertext_with_tag[:-TAG_SIZE]
+        tag = ciphertext_with_tag[-TAG_SIZE:]
 
-        # Step 7: Build the updated D3 container format
-        container = {
-            "metadata": metadata,
-            "recipients": encrypted_recipients,
-            "nonce": base64.b64encode(nonce).decode("utf-8"),
-            "ciphertext": base64.b64encode(ciphertext).decode("utf-8"),
-            "tag": base64.b64encode(tag).decode("utf-8")
-        }
-
-        return container
+        # Step 7: Build and validate canonical container (hex-encoded fields)
+        return build_container(
+            metadata=metadata,
+            recipients=recipient_entries,
+            nonce=nonce,
+            ciphertext=ciphertext,
+            tag=tag,
+        )
