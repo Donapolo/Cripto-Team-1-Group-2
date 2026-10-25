@@ -1,13 +1,10 @@
 """
 Canonical AAD builder for hybrid encryption containers.
 
-NOTE: Provisional implementation created to unblock the decryption module
-while Gabriel's aad_builder.py is being merged. The public interface
+NOTE: Provisional implementation created to unblock the decryption module. The public interface
 (build_aad) is designed to remain stable so that the encryption and
 decryption sides reconstruct byte-identical AAD.
 
-TODO: Reconcile with Gabriel's implementation once available. Both sides
-MUST call this function with the same inputs.
 """
 
 import json
