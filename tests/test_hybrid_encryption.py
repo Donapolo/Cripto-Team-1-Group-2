@@ -54,3 +54,14 @@ def test_encrypt_hybrid_accepts_list_format(test_recipients):
     ]
     container = HybridVault.encrypt_hybrid(b"List format test", "list.txt", recipients_list)
     assert validate_container(container) is None
+
+def test_encrypt_hybrid_rejects_duplicate_recipient_ids(test_recipients):
+    """Ensures encryption raises ValueError if duplicate IDs are present in a recipients list."""
+    alice_pk = test_recipients["alice"]
+    duplicate_list = [
+        {"id": "alice", "public_key": alice_pk},
+        {"id": "alice", "public_key": alice_pk},
+    ]
+
+    with pytest.raises(ValueError, match="Duplicate recipient identifier detected"):
+        HybridVault.encrypt_hybrid(b"Sample payload", "file.txt", duplicate_list)

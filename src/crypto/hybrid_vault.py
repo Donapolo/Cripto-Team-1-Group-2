@@ -56,7 +56,10 @@ class HybridVault:
             for entry in recipients:
                 if not isinstance(entry, dict) or "id" not in entry or "public_key" not in entry:
                     raise ValueError("Each recipient in list must contain 'id' and 'public_key'.")
-                recipients_map[entry["id"]] = entry["public_key"]
+                recipient_id = entry["id"]
+                if recipient_id in recipients_map:
+                    raise ValueError(f"Duplicate recipient identifier detected: '{recipient_id}'.")
+                recipients_map[recipient_id] = entry["public_key"]
         else:
             raise TypeError("recipients must be a dictionary or a list of dictionaries.")
 
