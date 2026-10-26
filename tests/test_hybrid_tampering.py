@@ -4,7 +4,7 @@ import json
 import pytest
 
 pytest.importorskip("ecies")
-from ecies.utils import generate_eth_key
+from src.crypto.key_manager import ECIESKeyManager
 from cryptography.exceptions import InvalidTag
 
 from src.crypto.aad_builder import ContainerFormatError
@@ -13,16 +13,19 @@ from src.crypto.hybrid_vault import decrypt_hybrid, encrypt_hybrid
 
 PLAINTEXT = b"contenido confidencial compartido entre varios usuarios"
 FILENAME = "contrato.pdf"
-FALLO_CERRADO = (InvalidTag, ContainerFormatError, ValueError, KeyError)  # agregar la excepcion de decrypt_hybrid si Jesus define una propia
+FALLO_CERRADO = (InvalidTag, ContainerFormatError, ValueError, KeyError,RuntimeError)  # agregar la excepcion de decrypt_hybrid si Jesus define una propia
 
 
 # Datos de apoyo
 
+import coincurve
+from eth_keys import keys
+
 def nuevo_usuario():
     """Devuelve (llave_publica_hex, llave_privada_hex)."""
-    llave = generate_eth_key()
-    return llave.public_key.to_hex(), llave.to_hex()
+    claves = ECIESKeyManager.generate_key_pair()
 
+    return claves["public_key"], claves["private_key"]
 
 @pytest.fixture
 def escenario():
