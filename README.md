@@ -43,3 +43,41 @@ The test suite is modularized to ensure independent verification of core compone
 To run the complete test suite locally, execute:
 ```bash
 python -m pytest -o pythonpath="." -v
+
+# Cripto-Team-1-Group-2: Hybrid Encryption (D3)
+
+## Hybrid Design Explanation
+
+### 1. Why hybrid encryption is used
+Asymmetric cryptography (such as ECIES over secp256k1) involves heavy mathematical operations over elliptic curve points, making it computationally inefficient and unsuitable for encrypting large arbitrary payloads. Conversely, symmetric encryption provides optimal performance at line-rate speeds but requires a secure channel to share the secret key beforehand. Hybrid encryption resolves this trade-off: bulk data is encrypted using high-performance symmetric cryptography, while asymmetric mechanisms securely distribute the single-use key to authorized entities without pre-shared secrets.
+
+### 2. Why symmetric encryption is still needed
+Symmetric encryption—specifically AES-256-GCM—is essential for several reasons:
+* **Throughput and Scalability:** AES-GCM leverages hardware acceleration (AES-NI and CLMUL) to process multi-megabyte and gigabyte payloads with negligible latency.
+* **Payload Size Constraints:** Asymmetric algorithms impose strict limits on the maximum message size they can directly encapsulate.
+* **Authenticated Encryption (AEAD):** AES-GCM provides confidentiality and cryptographic integrity simultaneously, ensuring ciphertext tampering is detected immediately during the GHASH evaluation step.
+
+### 3. Why per-recipient key encryption is required
+Each authorized recipient possesses a unique secp256k1 key pair. To grant access to multiple recipients without duplicating the encrypted payload:
+* A single, ephemeral 256-bit Data Encryption Key (DEK) encrypts the bulk file once.
+* The DEK is independently encapsulated (wrapped) for each recipient using their specific public key via ECIES.
+* This architecture maintains strict cryptographic isolation: compromise of an individual recipient's private key does not leak the private keys of peer recipients, while revoking or adding a participant only requires managing lightweight key-wrap entries rather than re-encrypting the entire dataset.
+
+---
+
+## Security Decisions
+
+### 1. How do recipients identify their key?
+The container structure identifies recipient entries through deterministic metadata:
+* **`id`:** A validated user identifier (conforming to regex restrictions) allowing deterministic lookup without trying trial decryptions.
+* **`key_id`:** A canonical SHA-256 fingerprint generated over the 33-byte compressed secp256k1 public key (`ECIESKeyManager.get_key_id()`). This allows a client with multiple keys or sub-identities to resolve the target key pair unambiguously.
+
+### 2. What happens if an attacker modifies the recipient list?
+The implementation enforces a **Fail-Closed policy**:
+* The canonical serialization of both `metadata` and the complete `recipients` list is bound directly to the AES-GCM Additional Authenticated Data (`AAD`) via `build_aad()`.
+* If an attacker alters an `id`, modifies an `encrypted_key`, reorders the recipients, injects a rogue entry, or drops a recipient, the calculated GHASH authentication tag will not match the container's `tag`.
+* AES-GCM decryption immediately fails and raises an `IntegrityError` before any plaintext is released, preventing unauthorized key substitution, recipient drop attacks, or metadata tampering.
+
+### 3. What happens if a public key is wrong?
+* **Malformed or invalid format:** Validated strictly before operations take place. If a public key does not represent a valid 33-byte compressed point on `secp256k1` (or cannot be parsed to one), `ECIESKeyManager` rejects the operation with a `ValueError`.
+* **Valid key but wrong recipient:** If encrypted with an unintended public key, the recipient's private key will fail the ECIES ephemeral ECDH point multiplication / MAC verification stage during `decrypt_dek`, rejecting the process with a `ValueError` without attempting AES-GCM payload decryption.
