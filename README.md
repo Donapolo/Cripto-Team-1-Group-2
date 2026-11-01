@@ -13,7 +13,7 @@
 
 The system implements a client-side Zero-Trust Document Vault. Cryptographic operations take place strictly inside the local endpoint host before data transmission.
 
-![System Architecture & Trust Boundaries](docs/img/architecture.png)
+![System Architecture & Trust Boundaries](Documentacion/arquitecture.png)
 
 ### Trust Boundaries
 - **Trusted Boundary (Client Endpoints):** Host CPU, process memory (RAM), OS CSPRNG (`os.urandom`), local private keys, and plaintext buffers. Private keys never leave this perimeter.
