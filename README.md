@@ -1,88 +1,55 @@
-# Cripto-Team-1-Group-2
+# Secure Document Vault (Cripto-Team-1-Group-2)
 
-**Course:** Cryptography (Term 2027-1)  
+**Course:** Cryptography (Term 2027-1) — Facultad de Ingeniería, UNAM  
 **Team Members:**
-* Jonathan Uriel González Fernández (`jonathanGF`)
-* Jesús Eduardo Paz Rosas (`JeedPR`)
-* Armando Vázquez Apolonio (`Donapolo`)
-* Yukioayax Canek Gabriel Hernández (`YukiGab`)
+- Jonathan Uriel González Fernández (`jonathanGF`)
+- Jesús Eduardo Paz Rosas (`JeedPR`)
+- Armando Vázquez Apolonio (`Donapolo`)
+- Yukioayax Canek Gabriel Hernández (`YukiGab`)
 
 ---
 
-# Phase 1: Secure Document Vault (Deliverable D2)
+## 1. System Architecture & Trust Boundaries
 
-## 1. Overview & Core Architecture
-Implementation of the core symmetric cryptographic engine for the secure document vault, ensuring confidentiality and integrity for both the stored payload and its associated metadata.
+The system implements a client-side Zero-Trust Document Vault. Cryptographic operations take place strictly inside the local endpoint host before data transmission.
 
-## 2. Cryptographic Algorithm & Security Design
-* **Algorithm:** **AES-256-GCM** (Galois/Counter Mode).
-* **AEAD Scheme:** Authenticated Encryption with Associated Data combined into a single primitive, leveraging hardware acceleration (AES-NI).
-* **Key Size:** 256 bits generated via a CSPRNG (`AESGCM.generate_key(bit_length=256)`).
-* **Nonce Strategy:** A 96-bit (12-byte) unique nonce generated per operation (`os.urandom(12)`) to strictly prevent IV reuse vulnerabilities.
+![System Architecture & Trust Boundaries](docs/img/architecture.png)
 
-## 3. Metadata Protection & AAD
-* **Bound Metadata:** Algorithm version, original filename, and UTC timestamp.
-* **Mechanism:** Deterministic serialization supplied as Additional Authenticated Data (AAD) to AES-GCM.
-* **Impact:** Any alteration to header fields causes immediate GHASH tag verification failure.
+### Trust Boundaries
+- **Trusted Boundary (Client Endpoints):** Host CPU, process memory (RAM), OS CSPRNG (`os.urandom`), local private keys, and plaintext buffers. Private keys never leave this perimeter.
+- **Untrusted Boundary (Transit & Cloud Storage):** Network transmission channels, cloud hosting providers, external disk persistence, and active adversaries (Man-in-the-Middle).
 
-## 4. Fail-Closed Security Policy
-If tampering is detected within the ciphertext or metadata, execution halts immediately (`RuntimeError` / `InvalidTag`) without releasing any plaintext data.
-
-## 5. Original Symmetric Container (D2)
-Serialized as a dictionary containing Base64-encoded fields:
-* `header`: Plainview metadata bound via AAD.
-* `nonce`: 96-bit initialization vector in Base64.
-* `payload`: Concatenation of the ciphertext and the authentication tag in Base64.
-
-## 6. D2 Test Suite
-* `test_roundtrip.py`: Verifies symmetric encryption/decryption roundtrips.
-* `test_metadata.py`: Validates detection of unauthorized header modifications.
-* `test_security_failures.py`: Tests error handling against invalid keys and corrupted payloads.
+### Core Components
+- **`HybridVault`:** High-level orchestrator coordinating the encryption pipeline, recipient governance, and decryption workflows.
+- **`ECIESKeyManager`:** Handles secp256k1 public key normalizations (33-byte compressed format) and ephemeral DEK wrapping/unwrapping.
+- **`aad_builder.py`:** Constructs canonical metadata representations and domain-separated Additional Authenticated Data (AAD) byte structures.
+- **`Canonical JSON Container`:** Hex-encoded standardized payload housing metadata, recipient tables, nonce, ciphertext, and GHASH tag.
 
 ---
 
-# Phase 2: Hybrid Encryption & Multi-Recipient Vault (Deliverable D3)
+## 2. Phase 1: Symmetric Engine (Deliverable D2)
 
-## 1. Hybrid Design Explanation
+### Cryptographic Primitives
+- **Algorithm:** **AES-256-GCM** (Galois/Counter Mode).
+- **Line-Rate AEAD:** Hardware-accelerated authenticated encryption leveraging Intel AES-NI and ARM Cryptography extensions.
+- **Key Generation:** 256-bit symmetric keys generated via CSPRNG (`AESGCM.generate_key(bit_length=256)`).
+- **Nonce Strategy:** Unique 96-bit (12-byte) CSPRNG nonce per file operation (`os.urandom(12)`), preventing IV reuse.
 
-### Why hybrid encryption is used
-Asymmetric cryptography (such as ECIES over secp256k1) relies on intensive point operations across elliptic curves, making it computationally expensive and impractical for bulk payloads. Conversely, symmetric encryption offers optimal throughput at line rate but requires an existing secure channel to exchange the shared secret. Hybrid encryption resolves this limitation: bulk data is encrypted using high-performance symmetric cryptography, while asymmetric mechanisms securely distribute the single-use key to authorized entities without pre-shared secrets.
-
-### Why symmetric encryption is still needed
-* **Throughput and Scalability:** AES-GCM takes full advantage of hardware instructions (AES-NI / CLMUL) to process multi-megabyte files with negligible latency.
-* **Payload Constraints:** Asymmetric algorithms impose strict limits on the maximum message size they can directly encapsulate.
-* **Integrated Integrity:** AES-GCM natively generates a GHASH authentication tag, ensuring both confidentiality and message authenticity simultaneously.
-
-### Why per-recipient key encryption is required
-Each authorized recipient holds an independent secp256k1 key pair. To grant access to multiple recipients without duplicating the encrypted file payload:
-* A single, ephemeral 256-bit Data Encryption Key (DEK) encrypts the bulk file once.
-* The DEK is independently encapsulated (wrapped) for each recipient using their specific public key via ECIES.
-* This guarantees cryptographic isolation: compromising one recipient's private key does not leak peers' keys, and granting or revoking access only requires managing lightweight recipient entries rather than re-encrypting the dataset.
+### Metadata Binding & AAD
+- **Bound Metadata:** Schema version, UTC timestamp, and original filename.
+- **Integrity Enforcement:** Serialized metadata is passed directly as Additional Authenticated Data (AAD) into AES-GCM. Any modification to header fields triggers immediate GHASH verification failure.
 
 ---
 
-## 2. Security Decisions
+## 3. Phase 2: Multi-Recipient Hybrid Vault (Deliverable D3)
 
-### How do recipients identify their key?
-The container structure identifies recipient entries through deterministic fields:
-* **`id`:** Validated user identifier (alphanumeric, max 64 characters) allowing direct lookup without trial decryptions. Duplicate IDs in recipient lists are strictly rejected with a `ValueError`.
-* **`key_id`:** Canonical SHA-256 fingerprint generated over the 33-byte compressed secp256k1 public key (`ECIESKeyManager.get_key_id()`), resolving specific key pairs when a participant manages multiple credentials.
+### Hybrid Encryption Mechanics
+- **Bulk Payload Encryption:** A fresh, single-use 256-bit Data Encryption Key (DEK) encrypts the bulk file once via AES-256-GCM, avoiding $O(N)$ storage overhead.
+- **Key Encapsulation (ECIES):** The DEK is independently encapsulated for each authorized recipient using ephemeral-static Diffie-Hellman over the **secp256k1** elliptic curve.
+- **Deterministic Lookup:** Fast $O(1)$ recipient identification via alphanumeric `id` (max 64 chars) and a canonical SHA-256 fingerprint (`key_id`) computed over the 33-byte compressed public key.
 
-### What happens if an attacker modifies the recipient list?
-The implementation enforces a strict **Fail-Closed policy**:
-* The canonical serialization of both `metadata` and the complete `recipients` list is bound directly into the AES-GCM Additional Authenticated Data (`AAD`) via `build_aad()`.
-* If an attacker modifies an `id`, alters an `encrypted_key`, reorders entries, injects a rogue recipient, or drops a participant, the calculated GHASH tag will not match the container's `tag`.
-* AES-GCM decryption terminates immediately with an `IntegrityError` before releasing any plaintext.
-
-### What happens if a public key is wrong?
-* **Malformed Key:** Keys not conforming to valid 33-byte compressed secp256k1 points (or convertible to them) are rejected prior to encryption with a `ValueError`.
-* **Unintended Recipient Key:** The target recipient's private key will fail ECIES ephemeral point multiplication / MAC verification during DEK decapsulation, raising a `ValueError` without attempting payload decryption.
-
----
-
-## 3. Canonical Hybrid Container (D3 Schema)
-
-In D3, the container structure was updated to canonical JSON serialization with lowercase hexadecimal encoding, conforming strictly to the `aad_builder.py` schema:
+### Canonical Container Schema (D3)
+The container adheres to a deterministic, hex-encoded JSON schema:
 
 ```json
 {
@@ -109,3 +76,89 @@ In D3, the container structure was updated to canonical JSON serialization with 
   "ciphertext": "variable-length hex string",
   "tag": "16-byte hex string (32 characters)"
 }
+```
+
+### Fail-Closed Security Policy
+- The entire recipient array and metadata are bound into the AES-GCM AAD.
+- Any attempt to tamper with ciphertext, modify recipient IDs, alter wrapped keys, reorder entries, or inject unauthorized recipients causes GHASH tag mismatch.
+- Decryption aborts immediately, raising an `IntegrityError` without releasing plaintext.
+
+---
+
+## 4. Phase 3: Midterm Verification & Quality Assurance (Deliverable D4)
+
+### Automated Test Suite
+The repository includes a comprehensive automated test suite consisting of **84 passing tests and 0 warnings** executed via `pytest`:
+
+- `test_aad_builder.py` (27 tests): Canonical serialization, domain separation, and schema validation.
+- `test_hybrid_tampering.py` (9 tests): Tamper resistance across ciphertext bytes, metadata, and recipient tables.
+- `test_hybrid_access.py` (5 tests): Unauthorized recipient isolation and access boundary verification.
+- `test_hybrid_encryption.py` (4 tests): Multi-recipient key wrapping and duplicate ID rejection.
+- `test_decrypt.py` & `test_roundtrip.py` (39 tests): Full end-to-end symmetric and hybrid roundtrip cycles.
+
+### Live Demonstration Matrix (`tests/demo_d4.py`)
+The verification script exercises all 4 mandatory evaluation scenarios:
+1. **Scenario 1 (Valid Encryption & Decryption):** Alice encrypts a confidential PDF; Alice verifies and restores the plaintext with bit-level fidelity.
+2. **Scenario 2 (Multi-Recipient Sharing):** Bob decrypts the exact same container using his independent private key without payload re-encryption.
+3. **Scenario 3 (Non-Recipient Rejection):** Carol (unauthorized user with a valid keypair) attempts decryption; access is immediately denied.
+4. **Scenario 4 (Tampering & Fail-Closed Enforcement):** Tampering with ciphertext bits and altering recipient headers triggers GHASH mismatch and raises `IntegrityError`.
+
+---
+
+## 5. Setup & Execution Instructions
+
+### Prerequisites
+- Python 3.10+
+- Virtual environment tool (`venv`)
+
+### Installation
+```bash
+# Clone repository
+git clone https://github.com/<your-repo>/cripto-vault.git
+cd cripto-vault
+
+# Create and activate virtual environment
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+
+# Install dependencies
+pip install -r requirements.txt
+```
+
+### Running the Test Suite
+```bash
+pytest -v
+```
+
+### Running the D4 Live Demo
+```bash
+python tests/demo_d4.py
+```
+
+---
+
+## 6. Repository Layout
+```text
+.
+├── docs/
+│   ├── img/
+│   │   └── architecture.png
+│   └── Secure-Document-Vault-Midterm-Review-D4.pdf
+├── src/
+│   ├── __init__.py
+│   ├── aad_builder.py
+│   ├── ecies_manager.py
+│   └── hybrid_vault.py
+├── tests/
+│   ├── demo_d4.py
+│   ├── test_aad_builder.py
+│   ├── test_decrypt.py
+│   ├── test_hybrid_access.py
+│   ├── test_hybrid_encryption.py
+│   ├── test_hybrid_tampering.py
+│   ├── test_metadata.py
+│   └── test_roundtrip.py
+├── .gitignore
+├── README.md
+└── requirements.txt
+```
