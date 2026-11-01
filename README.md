@@ -135,30 +135,3 @@ pytest -v
 python tests/demo_d4.py
 ```
 
----
-
-## 6. Repository Layout
-```text
-.
-├── docs/
-│   ├── img/
-│   │   └── architecture.png
-│   └── Secure-Document-Vault-Midterm-Review-D4.pdf
-├── src/
-│   ├── __init__.py
-│   ├── aad_builder.py
-│   ├── ecies_manager.py
-│   └── hybrid_vault.py
-├── tests/
-│   ├── demo_d4.py
-│   ├── test_aad_builder.py
-│   ├── test_decrypt.py
-│   ├── test_hybrid_access.py
-│   ├── test_hybrid_encryption.py
-│   ├── test_hybrid_tampering.py
-│   ├── test_metadata.py
-│   └── test_roundtrip.py
-├── .gitignore
-├── README.md
-└── requirements.txt
-```
