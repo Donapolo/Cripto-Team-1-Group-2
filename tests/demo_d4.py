@@ -63,11 +63,21 @@ def run_demo():
     print(f"     * Carol (Unauthorized Attacker) ID: carol | KeyID: {carol['key_id'][:16]}...\n")
 
     # Archivo simulado (PDF confidencial en memoria)
-    filename = "evaluacion_d4_confidencial.pdf"
-    plaintext_payload = (
-        b"%PDF-1.4 ... UNAM FI Secure Document Vault D4 Evaluation Plaintext Payload ... "
-        b"AES-256-GCM + ECIES-secp256k1 Verification Validated."
-    )
+    # Cargar un archivo PDF real desde demo_files
+    pdf_path = PROJECT_ROOT / "demo_files" / "confidencial.pdf"
+
+    if not pdf_path.is_file():
+        raise FileNotFoundError(
+            f"No se encontró el archivo PDF: {pdf_path}"
+        )
+
+    filename = pdf_path.name
+    plaintext_payload = pdf_path.read_bytes()
+
+    print(f"     [+] PDF loaded: {filename}")
+    print(f"     [+] Original file size: {len(plaintext_payload)} bytes\n")
+ 
+ 
 
     recipients_map = {
         "alice": alice["public_key"],
@@ -97,6 +107,14 @@ def run_demo():
         private_key=alice["private_key"],
     )
     assert recovered_alice == plaintext_payload, "Plaintext mismatch for Alice!"
+    # Guardar el PDF recuperado
+    output_dir = PROJECT_ROOT / "demo_output"
+    output_dir.mkdir(exist_ok=True)
+
+    output_file = output_dir / "recuperado_alice.pdf"
+    output_file.write_bytes(recovered_alice)
+
+    print(f"     [+] Recovered PDF saved: {output_file}")
     pass_banner(
         1,
         "Valid Encryption & Decryption",
