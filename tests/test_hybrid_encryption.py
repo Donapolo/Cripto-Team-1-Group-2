@@ -2,6 +2,9 @@ import pytest
 from src.crypto.key_manager import ECIESKeyManager
 from src.crypto.aad_builder import validate_container, ContainerFormatError
 from src.crypto.hybrid_vault import HybridVault
+from src.crypto.signature_manager import generate_key_pair
+
+SIGNER = generate_key_pair()
 
 
 @pytest.fixture
@@ -20,7 +23,7 @@ def test_encrypt_hybrid_success(test_recipients):
     data = b"Confidential payload for vault storage"
     filename = "document.pdf"
 
-    container = HybridVault.encrypt_hybrid(data, filename, test_recipients)
+    container = HybridVault.encrypt_hybrid(data, filename, test_recipients, signing_private_key=SIGNER["private_key"])
 
     # Validate structural compliance through canonical schema checker
     validate_container(container)
@@ -43,7 +46,7 @@ def test_encrypt_hybrid_enforces_minimum_two_recipients():
     single_recipient = {"alice": user["public_key"]}
 
     with pytest.raises(ValueError, match="at least 2 distinct authorized recipients"):
-        HybridVault.encrypt_hybrid(b"Data", "file.txt", single_recipient)
+        HybridVault.encrypt_hybrid(b"Data", "file.txt", single_recipient, signing_private_key=SIGNER["private_key"])
 
 
 def test_encrypt_hybrid_accepts_list_format(test_recipients):
@@ -52,7 +55,7 @@ def test_encrypt_hybrid_accepts_list_format(test_recipients):
         {"id": uid, "public_key": pk}
         for uid, pk in test_recipients.items()
     ]
-    container = HybridVault.encrypt_hybrid(b"List format test", "list.txt", recipients_list)
+    container = HybridVault.encrypt_hybrid(b"List format test", "list.txt", recipients_list, signing_private_key=SIGNER["private_key"])
     assert validate_container(container) is None
 
 def test_encrypt_hybrid_rejects_duplicate_recipient_ids(test_recipients):
@@ -64,4 +67,4 @@ def test_encrypt_hybrid_rejects_duplicate_recipient_ids(test_recipients):
     ]
 
     with pytest.raises(ValueError, match="Duplicate recipient identifier detected"):
-        HybridVault.encrypt_hybrid(b"Sample payload", "file.txt", duplicate_list)
+        HybridVault.encrypt_hybrid(b"Sample payload", "file.txt", duplicate_list, signing_private_key=SIGNER["private_key"])

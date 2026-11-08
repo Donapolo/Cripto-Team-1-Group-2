@@ -16,6 +16,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from src.crypto.key_manager import ECIESKeyManager
 from src.crypto.hybrid_vault import encrypt_hybrid, decrypt_hybrid, IntegrityError
+from src.crypto.signature_manager import generate_key_pair
 
 
 # Estilos de formato ANSI para la terminal en vivo
@@ -57,6 +58,8 @@ def run_demo():
     alice = ECIESKeyManager.generate_key_pair()
     bob = ECIESKeyManager.generate_key_pair()
     carol = ECIESKeyManager.generate_key_pair()
+    sender = generate_key_pair()  # Ed25519: llave de FIRMA independiente de ECIES
+    trusted_signers = {sender["signer_id"]: sender["public_key"]}
 
     print(f"     * Alice (Authorized Emisor)    ID: alice | KeyID: {alice['key_id'][:16]}...")
     print(f"     * Bob   (Authorized Receptor)  ID: bob   | KeyID: {bob['key_id'][:16]}...")
@@ -89,6 +92,7 @@ def run_demo():
         file_bytes=plaintext_payload,
         filename=filename,
         recipients=recipients_map,
+        signing_private_key=sender["private_key"],
     )
     print(f"   [+] Canonical JSON Container constructed:")
     print(f"       - Algorithm: {container['metadata']['aead_algorithm']} + {container['metadata']['key_wrap_algorithm']}")
@@ -105,6 +109,7 @@ def run_demo():
         container=container,
         user_id="alice",
         private_key=alice["private_key"],
+        trusted_signers=trusted_signers,
     )
     assert recovered_alice == plaintext_payload, "Plaintext mismatch for Alice!"
     # Guardar el PDF recuperado
@@ -130,6 +135,7 @@ def run_demo():
         container=container,
         user_id="bob",
         private_key=bob["private_key"],
+        trusted_signers=trusted_signers,
     )
     assert recovered_bob == plaintext_payload, "Plaintext mismatch for Bob!"
     pass_banner(
@@ -148,6 +154,7 @@ def run_demo():
             container=container,
             user_id="carol",
             private_key=carol["private_key"],
+            trusted_signers=trusted_signers,
         )
         print(f"  {Term.RED}[FAILED] Carol gained unauthorized access!{Term.RESET}")
         sys.exit(1)
@@ -175,6 +182,7 @@ def run_demo():
             container=tampered_ciphertext_container,
             user_id="bob",
             private_key=bob["private_key"],
+            trusted_signers=trusted_signers,
         )
         print(f"  {Term.RED}[FAILED] Tampered ciphertext was decrypted!{Term.RESET}")
         sys.exit(1)
@@ -182,7 +190,7 @@ def run_demo():
         fail_closed_banner(
             4,
             "Tampered Ciphertext Detected",
-            f"AES-GCM GHASH mismatch triggered: '{e}' -> Zero plaintext leaked.",
+            f"Ed25519 signature verification rejected alteration: '{e}' -> Zero plaintext leaked.",
         )
 
     # 4B: Manipulación de la tabla de destinatarios / AAD
@@ -194,6 +202,7 @@ def run_demo():
             container=tampered_recipient_container,
             user_id="mallory",
             private_key=bob["private_key"],
+            trusted_signers=trusted_signers,
         )
         print(f"  {Term.RED}[FAILED] Modified recipient list bypassed verification!{Term.RESET}")
         sys.exit(1)
@@ -201,7 +210,7 @@ def run_demo():
         fail_closed_banner(
             4,
             "Tampered Recipient / AAD Table Detected",
-            f"Reconstructed canonical AAD validation rejected alteration: '{e}'.",
+            f"Digital signature verification rejected modified recipients: '{e}'.",
         )
 
     # -------------------------------------------------------------------------
