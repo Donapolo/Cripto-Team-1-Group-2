@@ -1,22 +1,62 @@
-### Encryption Design Section
+## Signatures & Authentication (Deliverable D5)
 
-*   **Selected AEAD algorithm:** AES-256-GCM (via the `cryptography` library), it encrypts and authenticates in a single primitive, giving us confidentiality, integrity and tamper detection together.
+### Signature Design
 
-*   **Key size:** 256 bits (32 bytes), a fresh, unique key is generated for every file using the library's CSPRNG, which is backed by the operating system's randomness (`os.urandom`).
+- **Selected algorithm:** **Ed25519** (via the `cryptography` library). It gives small keys (32 bytes), fixed-size 64-byte signatures, deterministic signing (no per-signature nonce to get wrong) and is fast. Keys are raw 32-byte values stored as lowercase hex.
+- **Signer identification (`signer_id`):** SHA-256 fingerprint (64 hex characters) of the raw Ed25519 public key, computed by `signer_id_from_ed25519_public_key` in `aad_builder.py`.
+- **Signature encoding:** 64 raw bytes, stored as 128 lowercase hex characters in the `signature` field.
+- **What is signed:** the canonical payload built by `build_signing_payload`: the domain prefix `vault-d5-signature/v1\x00` followed by the canonical JSON (sorted keys, compact separators) of `metadata`, `recipients`, `nonce`, `ciphertext`, `tag` and `signer_id`. The `signature` field itself is never part of the payload.
+- **Hash -> Sign -> Verify:** the payload is hashed with SHA-256 and the 32-byte digest is the message signed with Ed25519. Ed25519 already hashes internally with SHA-512, so this pre-hash is not strictly required; we keep it to follow the Hash -> Sign -> Verify scheme, and it is harmless (the signer and verifier always apply it the same way).
+- **Domain separation:** the `vault-d5-signature/v1\x00` prefix makes sure a signature made for this container format cannot be reused as a valid signature for other data (and it differs from the AAD prefix `vault-d3-aad/v1\x00`).
 
-*   **Nonce strategy:** a 96-bit (12-byte) nonce is generated randomly with `os.urandom` for every encryption. Since each file also has its own fresh key, a (key, nonce) pair is never reused in practice, the nonce is not secret: it is stored in the container next to the ciphertext because it is required for decryption.
+### Updated Container Schema (D5)
 
-*   **Metadata authentication strategy:** the header (filename, algorithm version, encryption parameters, creation timestamp) is serialized as canonical JSON (sorted keys, compact separators) and passed to AES-GCM as Additional Authenticated Data (AAD). The header stays readable, but it is bound to the authentication tag: any change to it makes decryption fail with a generic `DecryptionError`, and no output file is written (fail-closed), the filename in the header is informational only and is never used as an output path.
+```json
+{
+  "metadata": { "...": "same as D3" },
+  "recipients": [ { "...": "same as D3" } ],
+  "nonce": "12-byte hex string (24 characters)",
+  "ciphertext": "variable-length hex string",
+  "tag": "16-byte hex string (32 characters)",
+  "signature": "64-byte Ed25519 signature as hex (128 characters)",
+  "signer_id": "SHA-256 fingerprint of the signer's public key (64 hex characters)"
+}
+```
+
+### Flow
+
+1. **Sign (encryption side):** Encrypt -> add metadata and recipients -> compute `signer_id` -> build the signing payload -> SHA-256 -> Ed25519 sign -> store the container (`sign_container`).
+2. **Verify (decryption side), before decrypting:**
+   1. Validate the container structure (a missing `signature` or `signer_id` is rejected here).
+   2. Check that the given public key matches the container's `signer_id`.
+   3. Rebuild the payload from the container, hash it and verify the signature (`verify_container`).
+   4. Only if everything passes, continue with ECIES unwrap and AES-GCM decryption.
+- Any failure raises `SignatureVerificationError` (or `ContainerFormatError` for malformed containers). Verification never returns `False`, so a caller cannot forget to check the result (fail-closed).
 
 ### Security Decisions
 
-*   **Why AEAD instead of encryption + hash?**
-    A plain hash is not a keyed authenticator: an attacker who modifies the ciphertext can simply recompute the hash, so nothing is detected, a MAC fixes that, but combining a cipher and a MAC by hand is error-prone (order of operations, covering the metadata, constant-time comparison; MAC-then-encrypt designs enabled padding-oracle attacks), AEAD performs encryption and authentication in one well-reviewed primitive, and AAD extends the protection to the metadata.
+- **Why sign the ciphertext (and not the plaintext)?**
+  The verifier can check authenticity before decrypting anything, so a forged or modified container is rejected without releasing plaintext or touching private keys. Signing the plaintext would force us to decrypt first and would make the signature depend on data the storage layer should never see.
+- **Why add a signature if AES-GCM already authenticates the data?**
+  GCM uses a symmetric key (the DEK) that every recipient can recover, so any recipient could build a container with a valid tag. The signature proves who produced the container: only the holder of the signer's private key can create it.
+- **What if the signature is not verified first?**
+  The system would parse, unwrap keys and decrypt data coming from an unauthenticated source. An attacker could swap in a container made with their own keys (valid for AES-GCM but not from the real sender) and the recipient would accept it, or feed malformed data to the decryption code. Verifying first means untrusted data is rejected before any decryption work.
+- **What if the metadata (and recipients) were excluded from the signature?**
+  An attacker could change the filename, the algorithms, the timestamp or the recipient list without breaking the signature. For example, they could re-label the container or add or remove recipients. By signing metadata, recipients, nonce, ciphertext, tag and `signer_id` together, changing any of them invalidates the signature.
+- **Why is `signer_id` inside the signed payload?**
+  So an attacker cannot change who the container claims to be signed by without invalidating the signature.
 
-*   **What happens if the nonce repeats?**
-    In AES-GCM, reusing a nonce with the same key is catastrophic, two messages share the same keystream, so XORing their ciphertexts reveals the XOR of the plaintexts, and the attacker can recover the GHASH authentication key and forge valid tags, we mitigate this with a random 96-bit nonce per encryption and a fresh key per file, so each key encrypts exactly one message.
+### Test Coverage (D5)
 
-*   **What attacker are you defending against?**
-    An attacker who obtains the encrypted container (stolen disk, compromised storage, intercepted copy) but does not have the key, and who may try to read it or modify it, after D2, they cannot read the contents or alter the ciphertext, tag, nonce or header without detection.
-    Out of scope for this deliverable: compromise or storage of the key itself, rollback to an older valid container, and deletion of the file. The `metadata.json` activity log is an audit trail, not a security control, and is not authenticated.
+`tests/test_signature_manager.py` (23 tests) covers the five mandatory cases:
+- **A:** valid signature accepted.
+- **B:** modified ciphertext rejected.
+- **C:** modified metadata, recipients, nonce or tag rejected.
+- **D:** wrong public key rejected (also a swapped `signer_id`).
+- **E:** removed `signature` (or `signer_id`) rejected.
+- Plus malformed signatures (wrong length, uppercase hex, non-string, empty) and a signature copied from another container.
 
+### Limitations
+
+- **Trusted public key:** `verify_container` checks that the signature matches the public key it is given and that the key matches `signer_id`. Deciding which public key is trustworthy for a given signer (a key registry or the key storage of D6) is part of the full-flow integration and is not solved by this module.
+- A valid old container can still be replayed (no rollback protection), and the signature does not hide any data (confidentiality comes from AES-GCM/ECIES).
