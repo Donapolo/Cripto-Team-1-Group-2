@@ -9,6 +9,10 @@ from cryptography.exceptions import InvalidTag
 
 from src.crypto.aad_builder import ContainerFormatError
 from src.crypto.hybrid_vault import decrypt_hybrid, encrypt_hybrid
+from src.crypto.signature_manager import generate_key_pair
+
+SIGNER = generate_key_pair()
+TRUSTED_SIGNERS = {SIGNER["signer_id"]: SIGNER["public_key"]}
 
 
 PLAINTEXT = b"contenido confidencial compartido entre varios usuarios"
@@ -17,9 +21,6 @@ FALLO_CERRADO = (InvalidTag, ContainerFormatError, ValueError, KeyError,RuntimeE
 
 
 # Datos de apoyo
-
-import coincurve
-from eth_keys import keys
 
 def nuevo_usuario():
     """Devuelve (llave_publica_hex, llave_privada_hex)."""
@@ -32,7 +33,7 @@ def escenario():
     # alice, bob y carol tienen llaves, pero el archivo solo se comparte con alice y bob
     usuarios = {uid: nuevo_usuario() for uid in ("alice", "bob", "carol")}
     recipients = {uid: usuarios[uid][0] for uid in ("alice", "bob")}
-    container = encrypt_hybrid(PLAINTEXT, FILENAME, recipients)
+    container = encrypt_hybrid(PLAINTEXT, FILENAME, recipients, signing_private_key=SIGNER["private_key"])
     return container, usuarios
 
 
@@ -42,7 +43,7 @@ def clonar(container):
 
 
 def descifrar(container, usuarios, uid):
-    return decrypt_hybrid(container, uid, usuarios[uid][1])
+    return decrypt_hybrid(container, uid, usuarios[uid][1], trusted_signers=TRUSTED_SIGNERS)
 
 
 def alterar_texto(valor):
@@ -176,7 +177,7 @@ def main():
     # 1. Alice y bob son destinatarios, carol no
     usuarios = {uid: nuevo_usuario() for uid in ("alice", "bob", "carol")}
     recipients = {uid: usuarios[uid][0] for uid in ("alice", "bob")}
-    container = encrypt_hybrid(PLAINTEXT, FILENAME, recipients)
+    container = encrypt_hybrid(PLAINTEXT, FILENAME, recipients, signing_private_key=SIGNER["private_key"])
     print("\n--- Contenedor generado ---")
     print(json.dumps(container, indent=4))
 
