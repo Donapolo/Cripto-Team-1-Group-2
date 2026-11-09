@@ -56,7 +56,14 @@
 - **E:** removed `signature` (or `signer_id`) rejected.
 - Plus malformed signatures (wrong length, uppercase hex, non-string, empty) and a signature copied from another container.
 
+### Integration and Acceptance Testing
+
+- `src/crypto/hybrid_vault.py` requires an external `trusted_signers` mapping and verifies the signature before ECIES key recovery or AES-GCM decryption.
+- `tests/test_d5_hybrid_workflow.py` tests the signing and fail-closed decryption workflow.
+- `tests/test_d5_acceptance.py` covers the five required end-to-end D5 scenarios, along with JSON serialization and invalid-signature rejection.
+- The full project suite passed **135 tests** in the team's Windows environment using `python -m pytest -q`.
+
 ### Limitations
 
-- **Trusted public key:** `verify_container` checks that the signature matches the public key it is given and that the key matches `signer_id`. Deciding which public key is trustworthy for a given signer (a key registry or the key storage of D6) is part of the full-flow integration and is not solved by this module.
+- **Trusted public keys:** `verify_container` validates a signature against the public key supplied by its caller; `hybrid_vault.py` additionally uses an externally provided `trusted_signers` mapping to reject untrusted signers before decryption. Persistent key storage, key revocation, and automated trust management have not been implemented.
 - A valid old container can still be replayed (no rollback protection), and the signature does not hide any data (confidentiality comes from AES-GCM/ECIES).
