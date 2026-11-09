@@ -140,12 +140,33 @@ def test_scenario_c_modified_metadata_rejected(crypto_environment):
 
 def test_scenario_d_wrong_public_key_rejected(crypto_environment):
     """
-    Escenario D: Llave publica incorrecta/no confiable -> Rechazado.
-    Si el documento fue firmado por un atacante (Eve) que no esta en el registro de confianza,
-    debe ser rechazado inmediatamente.
+    Escenario D: Llave publica incorrecta / no confiable -> Rechazado.
+    1. Firma valida evaluada con una llave publica incorrecta (wrong public key).
+    2. Documento firmado por un emisor ausente en el registro trusted_signers.
     """
     env = crypto_environment
-    # Eve firma el contenedor
+
+    # Caso 1: Firma legitima de Alice evaluada con una llave publica erronea (la de Eve)
+    container_alice = encrypt_hybrid(
+        file_bytes=env["payload"],
+        filename=env["filename"],
+        recipients=env["recipients_map"],
+        signing_private_key=env["signer_alice"]["private_key"],
+    )
+
+    wrong_key_registry = {
+        env["signer_alice"]["signer_id"]: env["signer_eve"]["public_key"]
+    }
+
+    with pytest.raises(IntegrityError, match="Signature verification failed"):
+        decrypt_hybrid(
+            container=container_alice,
+            user_id="bob",
+            private_key=env["bob_enc"]["private_key"],
+            trusted_signers=wrong_key_registry,
+        )
+
+    # Caso 2: Contenedor firmado por emisor fuera del registro de confianza
     container_eve = encrypt_hybrid(
         file_bytes=env["payload"],
         filename=env["filename"],
@@ -153,7 +174,6 @@ def test_scenario_d_wrong_public_key_rejected(crypto_environment):
         signing_private_key=env["signer_eve"]["private_key"],
     )
 
-    # El receptor solo confia en Alice
     with pytest.raises(IntegrityError, match="Unknown or untrusted document signer"):
         decrypt_hybrid(
             container=container_eve,
@@ -166,7 +186,7 @@ def test_scenario_d_wrong_public_key_rejected(crypto_environment):
 def test_scenario_e_signature_removed_rejected(crypto_environment):
     """
     Escenario E: Firma removida -> Rechazado.
-    Un contenedor que omita el campo 'signature' o 'signer_id' no debe ser procesado.
+    Un contenedor que omita el campo 'signature' o 'signer_id' debe ser rechazado inmediatamente.
     """
     env = crypto_environment
     container = encrypt_hybrid(
@@ -202,7 +222,7 @@ def test_scenario_e_signature_removed_rejected(crypto_environment):
 
 
 # ==============================================================================
-# PRUEBAS DE PERSISTENCIA Y NO-DESCIFRADO (SUGERIDAS POR ARMANDO)
+# PRUEBAS DE PERSISTENCIA Y NO-DESCIFRADO
 # ==============================================================================
 
 def test_json_serialization_roundtrip(crypto_environment):
@@ -215,7 +235,7 @@ def test_json_serialization_roundtrip(crypto_environment):
         signing_private_key=env["signer_alice"]["private_key"],
     )
 
-    # Simular guardado a disco y lectura desde archivo JSON
+    # Simular persistencia a disco (JSON dump/load)
     json_str = json.dumps(container)
     loaded_container = json.loads(json_str)
 
@@ -238,7 +258,7 @@ def test_invalid_signature_bytes_fails_closed(crypto_environment):
         signing_private_key=env["signer_alice"]["private_key"],
     )
 
-    # Modificar bytes de la firma conservando su longitud exacta
+    # Alterar un caracter hex de la firma manteniendo el tamano intacto
     sig_list = list(container["signature"])
     sig_list[0] = "0" if sig_list[0] != "0" else "1"
     container["signature"] = "".join(sig_list)
