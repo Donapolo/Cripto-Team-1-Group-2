@@ -1,4 +1,5 @@
 import os
+from collections.abc import Mapping
 from typing import Union, List, Dict
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from ecies import decrypt as ecies_decrypt
@@ -8,7 +9,6 @@ try:
     from src.crypto.aad_builder import (
         build_metadata,
         build_aad,
-        build_container,
         aad_from_container,
         validate_container,
         ContainerFormatError,
@@ -16,11 +16,13 @@ try:
         TAG_SIZE,
     )
     from src.crypto.key_manager import ECIESKeyManager
+    from src.crypto.signature_manager import (
+        sign_container, verify_container, SignatureVerificationError,
+    )
 except ModuleNotFoundError:
     from aad_builder import (
         build_metadata,
         build_aad,
-        build_container,
         aad_from_container,
         validate_container,
         ContainerFormatError,
@@ -28,6 +30,9 @@ except ModuleNotFoundError:
         TAG_SIZE,
     )
     from key_manager import ECIESKeyManager
+    from signature_manager import (
+        sign_container, verify_container, SignatureVerificationError,
+    )
 
 
 class IntegrityError(RuntimeError, ValueError):
@@ -56,13 +61,19 @@ class HybridVault:
         file_bytes: bytes,
         filename: str,
         recipients: Union[Dict[str, str], List[Dict[str, str]]],
+        *,
+        signing_private_key: str,
     ) -> dict:
         """
-        Encrypts payload using hybrid encryption adhering to the D3 specification:
+        Encrypt and sign a D5 container. A sender's Ed25519 signing private key
+        is REQUIRED: unsigned containers must never be produced.
+
+        Encryption follows the existing D3 pipeline:
         1. Generates a fresh 256-bit AES-GCM Data Encryption Key (DEK).
         2. Encapsulates the DEK for each recipient via ECIESKeyManager (secp256k1).
         3. Constructs canonical metadata and builds AAD binding both metadata and recipients.
-        4. Encrypts file bytes with AES-256-GCM and packages the output into a validated container.
+        4. Encrypts the plaintext with AES-256-GCM.
+        5. Signs the ciphertext and security-relevant metadata before returning the container.
         """
         if not isinstance(file_bytes, (bytes, bytearray)):
             raise TypeError("file_bytes must be raw bytes or bytearray.")
@@ -108,33 +119,62 @@ class HybridVault:
         ciphertext = ciphertext_with_tag[:-TAG_SIZE]
         tag = ciphertext_with_tag[-TAG_SIZE:]
 
-        # Step 7: Build and validate canonical container (hex-encoded fields)
-        return build_container(
+        # Step 7 (D5): sign the canonical ciphertext, recipients, nonce,
+        # tag and metadata; sign_container also validates the resulting JSON.
+        # No unsigned D3 container is returned as a fallback.
+        return sign_container(
             metadata=metadata,
             recipients=recipient_entries,
             nonce=nonce,
             ciphertext=ciphertext,
             tag=tag,
+            private_key_hex=signing_private_key,
         )
 
 
 encrypt_hybrid = HybridVault.encrypt_hybrid
 
 
-def decrypt_hybrid(container: dict, user_id: str, private_key: str) -> bytes:
+def decrypt_hybrid(
+    container: dict,
+    user_id: str,
+    private_key: str,
+    *,
+    trusted_signers: Mapping[str, str],
+) -> bytes:
     """
-    Hybrid Decryption Engine (assigned to Jesús)
-    1. Validate the container structure using Gabriel's strict schema.
-    2. Deterministic lookup of user_id in the recipients list.
-    3. DEK decryption using ECIES with the user's private key.
-    4. AAD reconstruction via Gabriel's aad_builder.
-    5. AES-GCM decryption (Fail-Closed policy).
+    Decrypt D5 ONLY after authenticating the sender's signature.
+
+    trusted_signers: a registry provisioned independently of the container,
+        mapping Ed25519 signer_id (SHA-256 fingerprint) to trusted public-key hex.
+        Never build this registry from data supplied by the container.
+
+    FAIL-CLOSED ORDER (D5):
+    1. Validate the structure (missing signature is rejected).
+    2. Resolve the signer's identity in the trusted registry.
+    3. Cryptographically verify the ENTIRE signed D5 payload.
+    4. Only then look up the recipient, unwrap the DEK and decrypt with AES-GCM.
     """
     try:
         validate_container(container)
-    except ContainerFormatError as e:
-        raise ValueError(f"Invalid container: {e}") from e
+    except ContainerFormatError as exc:
+        raise IntegrityError("Invalid or unsigned D5 container.") from exc
 
+    # The public key must come from an OUT-OF-BAND trust source (the caller),
+    # never from the document or an attacker-supplied key list.
+    if not isinstance(trusted_signers, Mapping) or not trusted_signers:
+        raise IntegrityError("A non-empty trusted signer registry is required.")
+
+    trusted_public_key = trusted_signers.get(container["signer_id"])
+    if not isinstance(trusted_public_key, str):
+        raise IntegrityError("Unknown or untrusted document signer.")
+
+    try:
+        verify_container(container, trusted_public_key)
+    except (SignatureVerificationError, ContainerFormatError, ValueError) as exc:
+        raise IntegrityError("Signature verification failed. Container rejected.") from exc
+
+    # Nothing that unwraps the DEK or decrypts is allowed above this line.
     recipient_entry = None
     for rec in container["recipients"]:
         if rec["id"] == user_id:

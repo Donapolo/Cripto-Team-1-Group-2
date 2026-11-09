@@ -7,7 +7,6 @@ from src.crypto.aad_builder import (
     ContainerFormatError,
     aad_from_container,
     build_aad,
-    build_container,
     build_metadata,
     build_recipient_entry,
     load_container,
@@ -15,7 +14,10 @@ from src.crypto.aad_builder import (
 )
 
 
+from src.crypto.signature_manager import generate_key_pair, sign_container
+
 # Datos de apoyo
+SIGNER = generate_key_pair()
 
 def lista_destinatarios():
     return [
@@ -25,9 +27,10 @@ def lista_destinatarios():
 
 
 def contenedor_base():
-    return build_container(
+    return sign_container(
         build_metadata("doc.pdf"), lista_destinatarios(),
         nonce=b"\x01" * 12, ciphertext=b"cifrado", tag=b"\x02" * 16,
+        private_key_hex=SIGNER["private_key"],
     )
 
 
@@ -162,7 +165,7 @@ def main():
     dek = AESGCM.generate_key(bit_length=256)
     nonce = b"\x07" * 12
     sellado = AESGCM(dek).encrypt(nonce, b"contenido secreto", aad)
-    contenedor = build_container(meta, destinatarios, nonce, sellado[:-16], sellado[-16:])
+    contenedor = sign_container(meta, destinatarios, nonce, sellado[:-16], sellado[-16:], SIGNER["private_key"])
     print("\nContenedor generado")
     print(json.dumps(contenedor, indent=4))
 
