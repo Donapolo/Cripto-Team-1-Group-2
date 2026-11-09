@@ -104,6 +104,57 @@ The verification script exercises all 4 mandatory evaluation scenarios:
 4. **Scenario 4 (Tampering & Fail-Closed Enforcement):** Tampering with ciphertext bits and altering recipient headers triggers GHASH mismatch and raises `IntegrityError`.
 
 ---
+## 5. Phase 4: Digital Signatures & Authentication (Deliverable D5)
+
+### Digital Signatures
+
+D5 adds digital signatures to the existing hybrid encryption system to verify the sender's identity and detect modifications to encrypted documents.
+
+- **Algorithm:** Ed25519.
+- **Signature Module:** `signature_manager.py`.
+- **Container Structure:** Updated to include `signature` and `signer_id`.
+- **Signed Data:** Metadata, recipients, nonce, ciphertext, authentication tag, and signer ID.
+- **Signer Identification:** SHA-256 fingerprint of the Ed25519 public key.
+
+### Encryption & Verification Workflow
+
+The `hybrid_vault.py` module now integrates digital signatures into the encryption and decryption processes.
+
+**Encryption:**
+
+Encrypt → Add Metadata → Sign → Store
+
+**Decryption:**
+
+Read Container → Validate → Verify Signature → Decrypt
+
+The system follows a **Fail-Closed** approach. If the signature is invalid, missing, or belongs to an untrusted signer, the document is rejected before decryption.
+
+Trusted public keys are provided through the `trusted_signers` registry, independently of the encrypted container.
+
+### Testing
+
+The team added unit tests and integration tests to verify the D5 requirements.
+
+The five required scenarios were tested:
+
+- **A:** Valid signature accepted.
+- **B:** Modified ciphertext rejected.
+- **C:** Modified metadata rejected.
+- **D:** Incorrect public key rejected.
+- **E:** Missing signature rejected.
+
+Additional tests cover JSON serialization, invalid signatures, and Fail-Closed behavior.
+
+**Final test results:**
+
+`python -m pytest -q`
+
+**135 passed, 0 failed.**
+
+### Current Limitations
+
+The system requires trusted public keys to be supplied externally. Persistent key management, revocation, and replay protection are not implemented in this deliverable.
 
 ## 5. Setup & Execution Instructions
 
