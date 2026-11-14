@@ -22,8 +22,9 @@ The system implements a client-side Zero-Trust Document Vault. Cryptographic ope
 ### Core Components
 - **`HybridVault`:** High-level orchestrator coordinating the encryption pipeline, recipient governance, and decryption workflows.
 - **`ECIESKeyManager`:** Handles secp256k1 public key normalizations (33-byte compressed format) and ephemeral DEK wrapping/unwrapping.
-- **`aad_builder.py`:** Constructs canonical metadata representations and domain-separated Additional Authenticated Data (AAD) byte structures.
-- **`Canonical JSON Container`:** Hex-encoded standardized payload housing metadata, recipient tables, nonce, ciphertext, and GHASH tag.
+- **`aad_builder.py`:** Constructs canonical metadata, domain-separated Additional Authenticated Data (AAD), and the canonical signing payload.
+- **`signature_manager.py`:** Manages Ed25519 key generation, digital signing, and signature verification.
+- **`Canonical JSON Container`:** Standardized hex-encoded container with metadata, recipients, nonce, ciphertext, authentication tag, `signature`, and `signer_id`.
 
 ---
 
@@ -105,33 +106,108 @@ The verification script exercises all 4 mandatory evaluation scenarios:
 
 ---
 
-## 5. Setup & Execution Instructions
+## 5. Phase 4: Digital Signatures & Authentication (Deliverable D5)
+
+### Digital Signatures
+
+D5 adds digital signatures to the existing hybrid encryption system to verify the sender's identity and detect modifications to encrypted documents.
+
+- **Algorithm:** Ed25519.
+- **Signature Module:** `signature_manager.py`.
+- **Container Structure:** Updated to include `signature` and `signer_id`.
+- **Signed Data:** Metadata, recipients, nonce, ciphertext, authentication tag, and signer ID.
+- **Signer Identification:** SHA-256 fingerprint of the Ed25519 public key.
+- **Signing Process:** The canonical payload is hashed with SHA-256 and the digest is signed using Ed25519, which also uses SHA-512 internally.
+
+### Encryption & Verification Workflow
+
+The `hybrid_vault.py` module now integrates digital signatures into the encryption and decryption processes.
+
+**Encryption:**
+
+Encrypt → Add Metadata → Sign → Store
+
+**Decryption:**
+
+Read Container → Validate → Verify Signature → Decrypt
+
+The system follows a **Fail-Closed** approach. If the signature is invalid, missing, or belongs to an untrusted signer, the document is rejected before decryption.
+
+Trusted public keys are provided through the `trusted_signers` registry, independently of the encrypted container.
+
+### Testing
+
+The team added unit tests and integration tests to verify the D5 requirements.
+
+The five required scenarios were tested:
+
+- **A:** Valid signature accepted.
+- **B:** Modified ciphertext rejected.
+- **C:** Modified metadata rejected.
+- **D:** Incorrect public key rejected.
+- **E:** Missing signature rejected.
+
+Additional tests cover JSON serialization, invalid signatures, and Fail-Closed behavior.
+
+**Final test results:**
+
+`python -m pytest -q`
+
+**135 passed, 0 failed.**
+
+### Current Limitations
+
+The system requires trusted public keys to be supplied externally. Persistent key management, revocation, and replay protection are not implemented in this deliverable.
+
+## 6. Setup & Execution Instructions
 
 ### Prerequisites
 - Python 3.10+
 - Virtual environment tool (`venv`)
 
 ### Installation
+
+**1. Clone the repository**
+
 ```bash
-# Clone repository
-git clone https://github.com/<your-repo>/cripto-vault.git
-cd cripto-vault
+git clone https://github.com/Donapolo/Cripto-Team-1-Group-2.git
+cd Cripto-Team-1-Group-2
+```
 
-# Create and activate virtual environment
+**2. Create a virtual environment**
+
+```bash
 python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+```
 
-# Install dependencies
-pip install -r requirements.txt
+**3. Activate the virtual environment** (choose your operating system)
+
+Windows (PowerShell):
+
+```powershell
+.\venv\Scripts\Activate.ps1
+```
+
+Linux / macOS:
+
+```bash
+source venv/bin/activate
+```
+
+**4. Install dependencies**
+
+```bash
+python -m pip install -r requirements.txt
 ```
 
 ### Running the Test Suite
+
 ```bash
-pytest -v
+python -m pytest -q
 ```
 
 ### Running the D4 Live Demo
+
 ```bash
 python tests/demo_d4.py
 ```
-
