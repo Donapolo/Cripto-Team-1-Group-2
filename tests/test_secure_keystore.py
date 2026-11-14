@@ -7,10 +7,14 @@ from src.crypto.key_manager import ECIESKeyManager
 from src.crypto.signature_manager import generate_key_pair as generate_signing_key_pair
 from src.crypto.secure_keystore import (
     KeystoreError,
+    MAX_SCRYPT_N,
+    MAX_SCRYPT_P,
+    MAX_SCRYPT_R,
     create_keystore,
     decrypt_private_key,
     load_keystore,
     save_keystore,
+    validate_keystore_schema,
 )
 
 
@@ -53,6 +57,54 @@ def test_ed25519_keystore_roundtrip():
 
     with pytest.raises(KeystoreError, match="Key usage mismatch"):
         decrypt_private_key(ks, "SignPass#99", expected_usage="decryption")
+
+
+def test_key_id_auto_derivation_and_mismatch_rejection():
+    """Derives key_id automatically when omitted and rejects mismatched key_id."""
+    pair_a = ECIESKeyManager.generate_key_pair()
+    pair_b = ECIESKeyManager.generate_key_pair()
+
+    # Auto-derivation matches ECIESKeyManager.get_key_id
+    ks_auto = create_keystore(pair_a["private_key"], "StrongPass!2026")
+    assert ks_auto["metadata"]["key_id"] == pair_a["key_id"]
+
+    # Mismatched key_id for secp256k1 is rejected
+    with pytest.raises(KeystoreError, match="does not match"):
+        create_keystore(pair_a["private_key"], "StrongPass!2026", key_id=pair_b["key_id"])
+
+    # Mismatched key_id for Ed25519 is rejected
+    sig_a = generate_signing_key_pair()
+    sig_b = generate_signing_key_pair()
+    with pytest.raises(KeystoreError, match="does not match"):
+        create_keystore(
+            sig_a["private_key"],
+            "SignPass#99",
+            key_id=sig_b["signer_id"],
+            algorithm="Ed25519",
+        )
+
+
+def test_kdf_upper_bounds_enforced():
+    """Rejects excessive Scrypt parameters to prevent memory/CPU DoS."""
+    pair = ECIESKeyManager.generate_key_pair()
+
+    with pytest.raises(KeystoreError, match="between"):
+        create_keystore(pair["private_key"], "Pass123!", scrypt_n=MAX_SCRYPT_N * 2)
+
+    with pytest.raises(KeystoreError, match="between"):
+        create_keystore(pair["private_key"], "Pass123!", scrypt_r=MAX_SCRYPT_R + 1)
+
+    with pytest.raises(KeystoreError, match="between"):
+        create_keystore(pair["private_key"], "Pass123!", scrypt_p=MAX_SCRYPT_P + 1)
+
+    # Also rejects tampered KDF parameters before allocating memory on decrypt
+    ks = create_keystore(pair["private_key"], "Pass123!")
+    ks_dos = copy.deepcopy(ks)
+    ks_dos["kdf_parameters"]["n"] = 2**28
+    with pytest.raises(KeystoreError, match="between"):
+        validate_keystore_schema(ks_dos)
+    with pytest.raises(KeystoreError, match="between"):
+        decrypt_private_key(ks_dos, "Pass123!")
 
 
 def test_wrong_password_rejected():

@@ -1,12 +1,15 @@
 """Secure Keystore module for D6 (Key Management).
 
 Provides password-based encryption (Scrypt + AES-256-GCM), structured serialization,
-and fail-closed authentication for secp256k1 and Ed25519 private keys at rest.
+cryptographic key-identity binding, and fail-closed authentication for secp256k1 and
+Ed25519 private keys at rest.
 """
 
 from __future__ import annotations
 
 import datetime
+import hashlib
+import hmac
 import json
 import os
 import re
@@ -14,6 +17,8 @@ from pathlib import Path
 from typing import Any
 
 from cryptography.exceptions import InvalidTag
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import ec, ed25519
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 
@@ -23,10 +28,19 @@ SALT_SIZE_BYTES = 16
 NONCE_SIZE_BYTES = 12
 TAG_SIZE_BYTES = 16
 
-DEFAULT_SCRYPT_N = 65536  # 2^16
+DEFAULT_SCRYPT_N = 65536  # 2^16 (~64 MiB with r=8)
 DEFAULT_SCRYPT_R = 8
 DEFAULT_SCRYPT_P = 1
 DEFAULT_SCRYPT_DKLEN = 32
+
+# Upper bounds to prevent memory/CPU Denial-of-Service from tampered keystores
+MIN_SCRYPT_N = 16384       # 2^14
+MAX_SCRYPT_N = 1048576     # 2^20
+MIN_SCRYPT_R = 1
+MAX_SCRYPT_R = 32
+MIN_SCRYPT_P = 1
+MAX_SCRYPT_P = 16
+MAX_SCRYPT_MEMORY_BYTES = 256 * 1024 * 1024  # 256 MiB ceiling (128 * N * r)
 
 ALLOWED_ALGORITHMS = {
     "secp256k1": "decryption",
@@ -88,9 +102,42 @@ def _validate_password(password: str) -> bytes:
     return password.encode("utf-8")
 
 
-def _derive_kek(password_bytes: bytes, salt: bytes, kdf_params: dict[str, Any]) -> bytes:
+def _derive_key_id_from_private_bytes(raw_private_key: bytes, algorithm: str) -> str:
+    """Derives the canonical SHA-256 public key fingerprint from a 32-byte private key."""
+    if algorithm == "secp256k1":
+        private_scalar = int.from_bytes(raw_private_key, "big")
+        try:
+            priv_obj = ec.derive_private_key(private_scalar, ec.SECP256K1())
+        except ValueError as exc:
+            raise KeystoreError("Invalid secp256k1 private scalar.") from exc
+        pub_bytes = priv_obj.public_key().public_bytes(
+            encoding=serialization.Encoding.X962,
+            format=serialization.PublicFormat.CompressedPoint,
+        )
+        return hashlib.sha256(pub_bytes).hexdigest()
+
+    if algorithm == "Ed25519":
+        try:
+            priv_obj = ed25519.Ed25519PrivateKey.from_private_bytes(raw_private_key)
+        except ValueError as exc:
+            raise KeystoreError("Invalid Ed25519 private key bytes.") from exc
+        pub_bytes = priv_obj.public_key().public_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PublicFormat.Raw,
+        )
+        return hashlib.sha256(pub_bytes).hexdigest()
+
+    raise KeystoreError(f"Unsupported algorithm: {algorithm}")
+
+
+def _validate_kdf_parameters(kdf_params: dict[str, Any]) -> tuple[int, int, int, int]:
+    """Validates Scrypt parameters including strict upper bounds to mitigate DoS."""
+    if not isinstance(kdf_params, dict) or set(kdf_params.keys()) != REQUIRED_KDF_FIELDS:
+        raise KeystoreError("Invalid 'kdf_parameters' structure.")
+
     if kdf_params.get("algorithm") != "scrypt":
         raise KeystoreError(f"Unsupported KDF algorithm: {kdf_params.get('algorithm')}")
+
     n = kdf_params.get("n")
     r = kdf_params.get("r")
     p = kdf_params.get("p")
@@ -98,13 +145,31 @@ def _derive_kek(password_bytes: bytes, salt: bytes, kdf_params: dict[str, Any]) 
 
     if not all(isinstance(x, int) and not isinstance(x, bool) for x in (n, r, p, dklen)):
         raise KeystoreError("KDF parameters n, r, p, and dklen must be integers.")
-    if dklen != 32:
+    if dklen != DEFAULT_SCRYPT_DKLEN:
         raise KeystoreError("KDF dklen must be exactly 32 bytes for AES-256-GCM.")
-    if n < 16384 or (n & (n - 1)) != 0:
-        raise KeystoreError("Scrypt parameter 'n' must be a power of 2 and >= 16384.")
-    if r < 1 or p < 1:
-        raise KeystoreError("Scrypt parameters 'r' and 'p' must be positive integers.")
+    if n < MIN_SCRYPT_N or n > MAX_SCRYPT_N or (n & (n - 1)) != 0:
+        raise KeystoreError(
+            f"Scrypt parameter 'n' must be a power of 2 between {MIN_SCRYPT_N} and {MAX_SCRYPT_N}."
+        )
+    if not (MIN_SCRYPT_R <= r <= MAX_SCRYPT_R):
+        raise KeystoreError(
+            f"Scrypt parameter 'r' must be between {MIN_SCRYPT_R} and {MAX_SCRYPT_R}."
+        )
+    if not (MIN_SCRYPT_P <= p <= MAX_SCRYPT_P):
+        raise KeystoreError(
+            f"Scrypt parameter 'p' must be between {MIN_SCRYPT_P} and {MAX_SCRYPT_P}."
+        )
+    if 128 * n * r > MAX_SCRYPT_MEMORY_BYTES:
+        raise KeystoreError(
+            f"Scrypt memory requirement (128 * n * r) exceeds maximum limit of "
+            f"{MAX_SCRYPT_MEMORY_BYTES} bytes."
+        )
 
+    return n, r, p, dklen
+
+
+def _derive_kek(password_bytes: bytes, salt: bytes, kdf_params: dict[str, Any]) -> bytes:
+    n, r, p, dklen = _validate_kdf_parameters(kdf_params)
     try:
         kdf = Scrypt(salt=salt, length=dklen, n=n, r=r, p=p)
         return kdf.derive(password_bytes)
@@ -126,7 +191,7 @@ def _build_keystore_aad(
 
 
 def validate_keystore_schema(keystore: dict[str, Any]) -> None:
-    """Validates the structural integrity of a keystore dictionary."""
+    """Validates the structural integrity and parameter bounds of a keystore dictionary."""
     if not isinstance(keystore, dict):
         raise KeystoreError("Keystore must be a dictionary.")
 
@@ -167,10 +232,7 @@ def validate_keystore_schema(keystore: dict[str, Any]) -> None:
     if not isinstance(metadata.get("created_at"), str) or not metadata["created_at"]:
         raise KeystoreError("Metadata 'created_at' must be a non-empty ISO timestamp string.")
 
-    kdf_params = keystore["kdf_parameters"]
-    if not isinstance(kdf_params, dict) or set(kdf_params.keys()) != REQUIRED_KDF_FIELDS:
-        raise KeystoreError("Invalid 'kdf_parameters' structure.")
-
+    _validate_kdf_parameters(keystore["kdf_parameters"])
     _validate_hex_bytes(keystore["salt"], "salt", SALT_SIZE_BYTES)
     _validate_hex_bytes(keystore["nonce"], "nonce", NONCE_SIZE_BYTES)
 
@@ -183,7 +245,7 @@ def create_keystore(
     private_key_hex: str,
     password: str,
     *,
-    key_id: str,
+    key_id: str | None = None,
     algorithm: str = "secp256k1",
     usage: str | None = None,
     user_id: str | None = None,
@@ -191,7 +253,11 @@ def create_keystore(
     scrypt_r: int = DEFAULT_SCRYPT_R,
     scrypt_p: int = DEFAULT_SCRYPT_P,
 ) -> dict[str, Any]:
-    """Encrypts a 32-byte private key under a password-derived key and returns a keystore dict."""
+    """Encrypts a 32-byte private key under a password-derived key and returns a keystore dict.
+
+    Derives the canonical public-key SHA-256 fingerprint from the private key and verifies
+    that it matches `key_id` (if provided).
+    """
     raw_private_key = _validate_hex_bytes(
         private_key_hex, "private_key_hex", PRIVATE_KEY_SIZE_BYTES
     )
@@ -211,21 +277,17 @@ def create_keystore(
             f"(expected '{expected_usage}')."
         )
 
-    clean_key_id = key_id.removeprefix("0x").lower() if isinstance(key_id, str) else ""
-    if not _HEX_64_PATTERN.fullmatch(clean_key_id):
-        raise KeystoreError("key_id must be a 64-character hexadecimal SHA-256 fingerprint.")
-
-    metadata: dict[str, Any] = {
-        "version": KEYSTORE_VERSION,
-        "key_id": clean_key_id,
-        "algorithm": algorithm,
-        "usage": usage,
-        "created_at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-    }
-    if user_id is not None:
-        if not isinstance(user_id, str) or not _USER_ID_PATTERN.fullmatch(user_id):
-            raise KeystoreError("Invalid user_id: use 1-64 letters, digits, '_' or '-'.")
-        metadata["user_id"] = user_id
+    derived_key_id = _derive_key_id_from_private_bytes(raw_private_key, algorithm)
+    if key_id is not None:
+        if not isinstance(key_id, str):
+            raise KeystoreError("key_id must be a 64-character hexadecimal SHA-256 fingerprint.")
+        clean_key_id = key_id.removeprefix("0x").lower()
+        if not _HEX_64_PATTERN.fullmatch(clean_key_id):
+            raise KeystoreError("key_id must be a 64-character hexadecimal SHA-256 fingerprint.")
+        if not hmac.compare_digest(derived_key_id, clean_key_id):
+            raise KeystoreError(
+                "Provided key_id does not match the public key derived from private_key_hex."
+            )
 
     kdf_parameters = {
         "algorithm": "scrypt",
@@ -234,6 +296,19 @@ def create_keystore(
         "p": scrypt_p,
         "dklen": DEFAULT_SCRYPT_DKLEN,
     }
+    _validate_kdf_parameters(kdf_parameters)
+
+    metadata: dict[str, Any] = {
+        "version": KEYSTORE_VERSION,
+        "key_id": derived_key_id,
+        "algorithm": algorithm,
+        "usage": usage,
+        "created_at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+    if user_id is not None:
+        if not isinstance(user_id, str) or not _USER_ID_PATTERN.fullmatch(user_id):
+            raise KeystoreError("Invalid user_id: use 1-64 letters, digits, '_' or '-'.")
+        metadata["user_id"] = user_id
 
     salt = os.urandom(SALT_SIZE_BYTES)
     salt_hex = salt.hex()
@@ -293,6 +368,10 @@ def decrypt_private_key(
 
     if len(plaintext_bytes) != PRIVATE_KEY_SIZE_BYTES:
         raise KeystoreError("Decrypted private key has an invalid size.")
+
+    derived_key_id = _derive_key_id_from_private_bytes(plaintext_bytes, metadata["algorithm"])
+    if not hmac.compare_digest(derived_key_id, metadata["key_id"]):
+        raise KeystoreError("Recovered private key does not match keystore metadata key_id.")
 
     return plaintext_bytes.hex()
 
