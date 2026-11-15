@@ -119,29 +119,23 @@ class ECIESKeyManager:
     def load_private_key_from_keystore(
         cls, keystore_path: str, expected_key_id: str | None = None
     ) -> str:
-        """
-        Loads a D6 keystore, securely prompts for the password using getpass,
-        and returns the decrypted private key (hex).
-        """
+        # ... código anterior ...
         try:
             keystore_dict = load_keystore(keystore_path)
-            
-            # Securely prompt for password without echoing to terminal
             password = getpass.getpass(f"Enter password for keystore '{keystore_path}': ")
             
             if not password:
                 raise ValueError("Password cannot be empty.")
 
-            # Decrypts and authenticates the key (verifies AAD and GCM tag)
+            # CORRECCIÓN AQUÍ: Forzar que la llave sea estrictamente para descifrado
             private_key_hex = decrypt_private_key(
                 keystore_dict,
                 password,
+                expected_usage="decryption",  # <--- AGREGAR ESTO
                 expected_key_id=expected_key_id
             )
             
-            # Explicitly drop the password from memory
             del password
-            
             return private_key_hex
             
         except KeystoreError as e:

@@ -220,21 +220,48 @@ def decrypt_hybrid_with_keystore(
     expected_key_id: str = None
 ) -> bytes:
     """
-    D6 Integration: Wrapper around decrypt_hybrid that securely loads the 
-    recipient's private key from a password-protected keystore.
-    
-    Fulfills D6 requirements:
-    - Uses getpass for secure password entry.
-    - Does not store or cache the decrypted private key.
-    - Verifies keystore integrity before attempting decryption.
+    D6 Integration: Fail-fast authentication before password prompt.
     """
+    # 1. Validar la estructura del contenedor
     try:
-        # 1. Load and decrypt the key from the keystore securely
+        validate_container(container)
+    except ContainerFormatError as exc:
+        raise IntegrityError("Invalid or unsigned D5 container.") from exc
+
+    # 2. Verificar la firma ANTES de pedir la contraseña
+    if not isinstance(trusted_signers, Mapping) or not trusted_signers:
+        raise IntegrityError("A non-empty trusted signer registry is required.")
+    
+    trusted_public_key = trusted_signers.get(container.get("signer_id"))
+    if not isinstance(trusted_public_key, str):
+        raise IntegrityError("Unknown or untrusted document signer.")
+
+    try:
+        verify_container(container, trusted_public_key)
+    except (SignatureVerificationError, ContainerFormatError, ValueError) as exc:
+        raise IntegrityError("Signature verification failed. Container rejected.") from exc
+
+    # 3. Extraer el key_id esperado directamente del contenedor validado
+    container_key_id = None
+    for rec in container.get("recipients", []):
+        if rec.get("id") == user_id:
+            container_key_id = rec.get("key_id")
+            break
+
+    if not container_key_id:
+        raise ValueError(f"Access denied: User '{user_id}' is not authorized for this container.")
+
+    # Si el usuario pasó un expected_key_id manual, verificar que coincida
+    if expected_key_id is not None and expected_key_id != container_key_id:
+        raise ValueError("Provided expected_key_id does not match the container's recipient key_id.")
+
+    # 4. Al final, pedir contraseña y cargar la llave asegurando que sea la correcta
+    try:
         private_key = ECIESKeyManager.load_private_key_from_keystore(
-            keystore_path, expected_key_id=expected_key_id
+            keystore_path, expected_key_id=container_key_id
         )
         
-        # 2. Proceed with the standard D5/D3 decryption flow
+        # 5. Descifrar
         return decrypt_hybrid(
             container=container,
             user_id=user_id,
@@ -242,8 +269,6 @@ def decrypt_hybrid_with_keystore(
             trusted_signers=trusted_signers
         )
     finally:
-        # 3. Best-effort clearing of the private key from local scope
-        # (Note: Python strings are immutable, but this removes the reference)
         if 'private_key' in locals():
             del private_key
             
