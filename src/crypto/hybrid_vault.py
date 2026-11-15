@@ -210,3 +210,40 @@ def decrypt_hybrid(
         ) from e
 
     return plaintext
+
+def decrypt_hybrid_with_keystore(
+    container: dict,
+    user_id: str,
+    keystore_path: str,
+    *,
+    trusted_signers: Mapping[str, str],
+    expected_key_id: str = None
+) -> bytes:
+    """
+    D6 Integration: Wrapper around decrypt_hybrid that securely loads the 
+    recipient's private key from a password-protected keystore.
+    
+    Fulfills D6 requirements:
+    - Uses getpass for secure password entry.
+    - Does not store or cache the decrypted private key.
+    - Verifies keystore integrity before attempting decryption.
+    """
+    try:
+        # 1. Load and decrypt the key from the keystore securely
+        private_key = ECIESKeyManager.load_private_key_from_keystore(
+            keystore_path, expected_key_id=expected_key_id
+        )
+        
+        # 2. Proceed with the standard D5/D3 decryption flow
+        return decrypt_hybrid(
+            container=container,
+            user_id=user_id,
+            private_key=private_key,
+            trusted_signers=trusted_signers
+        )
+    finally:
+        # 3. Best-effort clearing of the private key from local scope
+        # (Note: Python strings are immutable, but this removes the reference)
+        if 'private_key' in locals():
+            del private_key
+            
