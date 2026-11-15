@@ -9,11 +9,17 @@ Estados: active, retired (rotada), revoked. "Expirada" se calcula con expires_at
 - revoked: nada, salvo descifrar con recovery=True (para recuperar documentos viejos).
 secp256k1 -> encrypt_to, decrypt | Ed25519 -> sign, verify
 
+Integridad: el archivo lleva un MAC (HMAC-SHA256) con una llave derivada de una contrasena
+del registro (registry_password). Si alguien edita el JSON a mano (por ejemplo, volver a
+poner una llave revocada como activa), la carga falla. Limite: un atacante con acceso al
+archivo puede restaurar una copia ANTERIOR valida (rollback); eso requiere un ancla externa.
+
 Limite: revocar es logico. Si alguien ya tiene la llave y una copia del contenedor,
 puede descifrar offline; hay que recifrar los documentos.
 """
 
 import hashlib
+import hmac
 import json
 import os
 import re
@@ -101,29 +107,47 @@ def validate_registry(registry):
             activas.add(par)
 
 
-def load_registry(registry_path):
+def _mac(nucleo, password, salt_hex):
+    if not isinstance(password, str) or not password.strip():
+        raise KeyLifecycleError("registry_password must be a non-empty string.")
+    llave = hashlib.scrypt(password.encode("utf-8"), salt=bytes.fromhex(salt_hex),
+                           n=16384, r=8, p=1, dklen=32)
+    canonico = json.dumps(nucleo, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hmac.new(llave, canonico, hashlib.sha256).hexdigest()
+
+
+def load_registry(registry_path, registry_password):
+    """Lee el registro, verifica su MAC y luego lo valida. Si algo falla, no se usa."""
     ruta = Path(registry_path)
     if not ruta.is_file():
         raise KeyLifecycleError(f"Registry file not found: {ruta}")
     try:
-        registry = json.loads(ruta.read_text(encoding="utf-8"))
-    except ValueError:
+        datos = json.loads(ruta.read_text(encoding="utf-8"))
+        salt, mac = datos.pop("mac_salt"), datos.pop("mac")
+        esperado = _mac(datos, registry_password, salt)
+    except KeyLifecycleError:
+        raise
+    except Exception:
         raise KeyLifecycleError("Failed to parse registry JSON file.") from None
-    validate_registry(registry)
-    return registry
+    if not isinstance(mac, str) or not hmac.compare_digest(esperado, mac):
+        raise KeyLifecycleError("Registry integrity check failed: wrong password or file modified.")
+    validate_registry(datos)
+    return datos
 
 
-def save_registry(registry, registry_path):
+def save_registry(registry, registry_path, registry_password):
     validate_registry(registry)
+    salt = os.urandom(16).hex()
+    completo = dict(registry, mac_salt=salt, mac=_mac(registry, registry_password, salt))
     ruta = Path(registry_path)
     ruta.parent.mkdir(parents=True, exist_ok=True)
     temporal = ruta.with_name(ruta.name + ".tmp")
-    temporal.write_text(json.dumps(registry, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    temporal.write_text(json.dumps(completo, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     os.replace(temporal, ruta)
 
 
-def _cargar_o_nuevo(ruta):
-    return load_registry(ruta) if Path(ruta).exists() else new_registry()
+def _cargar_o_nuevo(ruta, password):
+    return load_registry(ruta, password) if Path(ruta).exists() else new_registry()
 
 
 def _activa(registry, user_id, algorithm):
@@ -166,32 +190,32 @@ def _crear(registry, user_id, algorithm, password, keystore_dir, dias, ahora, kd
     return entrada, ruta
 
 
-def _guardar(registry, registry_path, archivos_nuevos):
+def _guardar(registry, registry_path, registry_password, archivos_nuevos):
     # si falla guardar el registro, borra los keystores recien creados
     try:
-        save_registry(registry, registry_path)
+        save_registry(registry, registry_path, registry_password)
     except Exception:
         for a in archivos_nuevos:
             a.unlink(missing_ok=True)
         raise
 
 
-def generate_key(registry_path, user_id, algorithm, password, keystore_dir, *,
+def generate_key(registry_path, user_id, algorithm, password, keystore_dir, *, registry_password,
                  validity_days=365, now=None, **kdf_options):
     """Crea la PRIMERA llave activa de (user_id, algorithm). Para cambiarla, usar rotate_key."""
-    registry = _cargar_o_nuevo(registry_path)
+    registry = _cargar_o_nuevo(registry_path, registry_password)
     if _activa(registry, user_id, algorithm):
         raise KeyLifecycleError("User already has an active key for this algorithm; use rotate_key.")
     entrada, ruta = _crear(registry, user_id, algorithm, password, keystore_dir,
                            validity_days, _ahora(now), kdf_options)
-    _guardar(registry, registry_path, [ruta])
+    _guardar(registry, registry_path, registry_password, [ruta])
     return dict(entrada)
 
 
-def rotate_key(registry_path, user_id, algorithm, password, keystore_dir, *,
+def rotate_key(registry_path, user_id, algorithm, password, keystore_dir, *, registry_password,
                validity_days=365, now=None, **kdf_options):
     """Retira la llave activa y activa una nueva. La vieja sigue descifrando/verificando."""
-    registry = _cargar_o_nuevo(registry_path)
+    registry = _cargar_o_nuevo(registry_path, registry_password)
     vieja = _activa(registry, user_id, algorithm)
     if vieja is None:
         raise KeyLifecycleError("No active key to rotate; use generate_key.")
@@ -199,7 +223,7 @@ def rotate_key(registry_path, user_id, algorithm, password, keystore_dir, *,
     nueva, ruta = _crear(registry, user_id, algorithm, password, keystore_dir,
                          validity_days, ahora, kdf_options)
     vieja["status"], vieja["changed_at"] = "retired", ahora.isoformat()
-    _guardar(registry, registry_path, [ruta])
+    _guardar(registry, registry_path, registry_password, [ruta])
     return dict(nueva)
 
 
@@ -211,20 +235,20 @@ def _revocar(entrada, reason, ahora):
     entrada["status"], entrada["changed_at"], entrada["reason"] = "revoked", ahora.isoformat(), reason.strip()
 
 
-def revoke_key(registry_path, key_id, reason, *, now=None):
-    registry = load_registry(registry_path)
+def revoke_key(registry_path, key_id, reason, *, registry_password, now=None):
+    registry = load_registry(registry_path, registry_password)
     if key_id not in registry["keys"]:
         raise KeyLifecycleError("Unknown key_id.")
     entrada = registry["keys"][key_id]
     _revocar(entrada, reason, _ahora(now))
-    _guardar(registry, registry_path, [])
+    _guardar(registry, registry_path, registry_password, [])
     return dict(entrada)
 
 
-def handle_compromise(registry_path, key_id, reason, password, keystore_dir, *,
+def handle_compromise(registry_path, key_id, reason, password, keystore_dir, *, registry_password,
                       validity_days=365, now=None, **kdf_options):
     """Revoca la llave y, si era la activa, crea su reemplazo (todo se guarda junto)."""
-    registry = load_registry(registry_path)
+    registry = load_registry(registry_path, registry_password)
     if key_id not in registry["keys"]:
         raise KeyLifecycleError("Unknown key_id.")
     entrada = registry["keys"][key_id]
@@ -236,7 +260,7 @@ def handle_compromise(registry_path, key_id, reason, password, keystore_dir, *,
         reemplazo, ruta = _crear(registry, entrada["user_id"], entrada["algorithm"], password,
                                  keystore_dir, validity_days, ahora, kdf_options)
         nuevos.append(ruta)
-    _guardar(registry, registry_path, nuevos)
+    _guardar(registry, registry_path, registry_password, nuevos)
     if entrada["algorithm"] == "secp256k1":
         pasos = ["Re-encrypt the affected documents to the replacement key (decrypt with recovery=True).",
                  "Tell senders to stop encrypting to the revoked key."]
@@ -286,3 +310,60 @@ def build_trusted_signers(registry, *, now=None):
         if e["algorithm"] == "Ed25519" and e["status"] != "revoked":
             confiables[key_id] = e["public_key"]
     return confiables
+
+
+# ---- integracion: las reglas se aplican en las operaciones reales de cifrado/descifrado ----
+
+def _id_de_publica(public_key_hex):
+    try:
+        return hashlib.sha256(bytes.fromhex(public_key_hex.removeprefix("0x"))).hexdigest()
+    except (ValueError, AttributeError):
+        raise KeyLifecycleError("Malformed public key hex.") from None
+
+
+def encrypt_with_registry(registry, file_bytes, filename, recipients, signing_private_key, *, now=None):
+    """Cifra con hybrid_vault, pero SOLO si el registro permite cada llave involucrada.
+
+    Rechaza destinatarios desconocidos, retirados, expirados o revocados (encrypt_to) y un
+    firmante que no pueda firmar (sign). Ademas, cada llave debe pertenecer a su usuario.
+    """
+    try:
+        from src.crypto.hybrid_vault import encrypt_hybrid
+    except ModuleNotFoundError:
+        from hybrid_vault import encrypt_hybrid
+    for usuario, publica in recipients.items():
+        entrada = check_key_usable(registry, _id_de_publica(publica), "encrypt_to", now=now)
+        if entrada["user_id"] != usuario:
+            raise KeyLifecycleError("Recipient key does not belong to that user.")
+    try:
+        firmante = ed25519.Ed25519PrivateKey.from_private_bytes(bytes.fromhex(signing_private_key))
+    except (ValueError, TypeError):
+        raise KeyLifecycleError("Invalid signing private key.") from None
+    pub = firmante.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+    check_key_usable(registry, hashlib.sha256(pub).hexdigest(), "sign", now=now)
+    return encrypt_hybrid(file_bytes=file_bytes, filename=filename, recipients=recipients,
+                          signing_private_key=signing_private_key)
+
+
+def decrypt_with_registry(registry, container, user_id, keystore_path, *, now=None, recovery=False):
+    """Descifra con el keystore, pero solo si la llave esta permitida en el registro.
+
+    Revisa estado/expiracion ANTES de pedir la contrasena y usa como trusted_signers solo los
+    firmantes que el registro todavia acepta (los revocados quedan fuera).
+    """
+    try:
+        from src.crypto.hybrid_vault import decrypt_hybrid_with_keystore
+        from src.crypto.secure_keystore import load_keystore
+    except ModuleNotFoundError:
+        from hybrid_vault import decrypt_hybrid_with_keystore
+        from secure_keystore import load_keystore
+    try:
+        key_id = load_keystore(keystore_path)["metadata"]["key_id"]
+    except KeystoreError as e:
+        raise KeyLifecycleError(f"Cannot read keystore: {e}") from None
+    entrada = check_key_usable(registry, key_id, "decrypt", now=now, recovery=recovery)
+    if entrada["user_id"] != user_id:
+        raise KeyLifecycleError("Keystore does not belong to that user.")
+    return decrypt_hybrid_with_keystore(
+        container, user_id, keystore_path,
+        trusted_signers=build_trusted_signers(registry, now=now), expected_key_id=key_id)
