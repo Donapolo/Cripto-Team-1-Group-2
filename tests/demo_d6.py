@@ -1,11 +1,7 @@
-"""D6 - Live demonstration: Secure Document Vault (Armando).
+"""D6 - Live demonstration: Secure Document Vault
 
 Run from the repository root:
     python tests/demo_d6.py
-
-Demonstrates the five mandatory D6 acceptance criteria and, with ``eciespy``
-and ``coincurve`` installed, a full D3/D5/D6 document roundtrip, including
-backup/restore and lifecycle enforcement.
 
 All keys and passwords are generated for this demo and deleted from disk when
 it finishes; never copy temporary demo credentials into production code.

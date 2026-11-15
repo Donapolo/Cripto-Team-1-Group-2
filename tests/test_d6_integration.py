@@ -1,7 +1,4 @@
-"""D6 - Acceptance and end-to-end tests (Armando).
-
-From the repository root:
-    python -m pytest -v tests/test_d6_integration.py
+"""D6 - Acceptance and end-to-end tests 
 
 The five mandatory acceptance cases run with ``cryptography`` alone.
 Real ECIES/hybrid integration requires ``eciespy`` and ``coincurve`` and is
