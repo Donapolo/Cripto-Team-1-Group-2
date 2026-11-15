@@ -1,12 +1,25 @@
-"""Key generation, identification and DEK wrapping for D3.
+"""Key generation, identification and DEK wrapping for D3 & D6.
 
 Private keys returned here are plaintext: D6 will address secure at-rest storage.
 """
 import hashlib
 import re
+import getpass
 
 from ecies import decrypt, encrypt
 from ecies.keys import PrivateKey
+
+# D6 Keystore imports
+try:
+    from src.crypto.secure_keystore import (
+        create_keystore, save_keystore, load_keystore,
+        decrypt_private_key, KeystoreError
+    )
+except ModuleNotFoundError:
+    from secure_keystore import (
+        create_keystore, save_keystore, load_keystore,
+        decrypt_private_key, KeystoreError
+    )
 
 
 class ECIESKeyManager:
@@ -78,3 +91,52 @@ class ECIESKeyManager:
                 "encrypted_key": cls.encrypt_dek(dek, public_key),
             })
         return result
+
+    # =====================================================================
+    # D6 INTEGRATION (Jesus)
+    # =====================================================================
+
+    @classmethod
+    def save_key_to_keystore(
+        cls, key_pair: dict, password: str, keystore_path: str
+    ) -> None:
+        """
+        Encrypts and saves a generated key pair into a D6 secure keystore.
+        """
+        try:
+            keystore_dict = create_keystore(
+                private_key_hex=key_pair["private_key"],
+                password=password,
+                key_id=key_pair["key_id"],
+                algorithm="secp256k1",
+                usage="decryption"
+            )
+            save_keystore(keystore_dict, keystore_path)
+        except KeystoreError as e:
+            raise ValueError(f"Failed to save keystore: {e}") from e
+
+    @classmethod
+    def load_private_key_from_keystore(
+        cls, keystore_path: str, expected_key_id: str | None = None
+    ) -> str:
+        # ... código anterior ...
+        try:
+            keystore_dict = load_keystore(keystore_path)
+            password = getpass.getpass(f"Enter password for keystore '{keystore_path}': ")
+            
+            if not password:
+                raise ValueError("Password cannot be empty.")
+
+            # CORRECCIÓN AQUÍ: Forzar que la llave sea estrictamente para descifrado
+            private_key_hex = decrypt_private_key(
+                keystore_dict,
+                password,
+                expected_usage="decryption",  # <--- AGREGAR ESTO
+                expected_key_id=expected_key_id
+            )
+            
+            del password
+            return private_key_hex
+            
+        except KeystoreError as e:
+            raise ValueError(f"Access Denied: {e}") from e
