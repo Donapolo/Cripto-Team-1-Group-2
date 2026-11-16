@@ -418,8 +418,3 @@ Cripto-Team-1-Group-2/
 
 **Documentation is a shared responsibility of the entire team.** Each member contributes to the design and security discussion for their implementation.
 
----
-
-## 10. Security Notes
-
-This repository is an academic prototype. Never commit actual private keys, passwords, registry credentials, recovery material, or real confidential documents. Use a dedicated secret manager and appropriate access controls in a production deployment. D6 improves protection of **stored** private keys, but the system still relies on secure endpoints, strong passwords, correct usage of policy-aware APIs, and trustworthy public-key distribution.
