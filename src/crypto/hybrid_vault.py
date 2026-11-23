@@ -271,4 +271,50 @@ def decrypt_hybrid_with_keystore(
     finally:
         if 'private_key' in locals():
             del private_key
-            
+
+def _validate_lifecycle_for_encrypt(registry, recipients_map: Dict[str, str], signing_private_key: str, now=None) -> None:
+    """Validate recipient and signer key states against the lifecycle registry."""
+    if registry is None:
+        return
+    try:
+        from src.crypto.key_lifecycle import check_key_usable, _id_de_publica
+        from src.crypto.signature_manager import derive_signer_id
+    except ModuleNotFoundError:
+        from key_lifecycle import check_key_usable, _id_de_publica
+        from signature_manager import derive_signer_id
+
+    for recipient_id, pub_hex in recipients_map.items():
+        entry = check_key_usable(registry, _id_de_publica(pub_hex), "encrypt_to", now=now)
+        if entry.get("user_id") != recipient_id:
+            raise ValueError(f"Recipient key does not belong to user '{recipient_id}'.")
+
+    signer_id = derive_signer_id(signing_private_key)
+    check_key_usable(registry, signer_id, "sign", now=now)
+
+
+def _validate_lifecycle_for_decrypt(
+    registry,
+    container: dict,
+    user_id: str,
+    recipient_key_id: str | None = None,
+    *,
+    now=None,
+    recovery: bool = False,
+) -> None:
+    """Validate signer and recipient key states before unlocking or decrypting."""
+    if registry is None:
+        return
+    try:
+        from src.crypto.key_lifecycle import check_key_usable
+    except ModuleNotFoundError:
+        from key_lifecycle import check_key_usable
+
+    signer_id = container.get("signer_id")
+    if not signer_id:
+        raise IntegrityError("Missing signer_id in container.")
+    check_key_usable(registry, signer_id, "verify", now=now)
+
+    if recipient_key_id:
+        entry = check_key_usable(registry, recipient_key_id, "decrypt", now=now, recovery=recovery)
+        if entry.get("user_id") != user_id:
+            raise ValueError(f"Keystore/key does not belong to user '{user_id}'.")

@@ -278,3 +278,92 @@ def test_d6_09_tampered_signed_container_fails_before_password_prompt(
     )
     with pytest.raises(IntegrityError):
         decrypt_with_registry(env["registry"], tampered, "alice", alice_path)
+
+def test_d6_10_revoked_signing_key_blocked_for_new_and_existing_containers(
+    hybrid_environment, monkeypatch
+):
+    """Verify revoked Ed25519 signing keys are blocked for new and existing containers."""
+    pytest.importorskip("ecies")
+    pytest.importorskip("coincurve")
+    from src.crypto.hybrid_vault import IntegrityError
+    from src.crypto.key_lifecycle import decrypt_with_registry, encrypt_with_registry
+
+    env = hybrid_environment
+    entries = env["credentials"]
+    recipients = {
+        "alice": entries["alice"]["public_key"],
+        "bob": entries["bob"]["public_key"],
+    }
+
+    # Document signed before revoking the sender's Ed25519 key.
+    signed_container = encrypt_with_registry(
+        env["registry"], env["payload"], "signed_before_revocation.txt",
+        recipients, env["signer_private_key"],
+    )
+
+    # Revoke the sender's signing key in the registry.
+    revoke_key(
+        env["registry_path"], entries["sender"]["key_id"],
+        "signing key compromised", registry_password=REGISTRY_PASSWORD,
+    )
+    updated_registry = load_registry(env["registry_path"], REGISTRY_PASSWORD)
+
+    # New containers cannot be encrypted/signed with a revoked signing key.
+    with pytest.raises(KeyLifecycleError, match="revoked"):
+        encrypt_with_registry(
+            updated_registry, b"new document", "new.txt",
+            recipients, env["signer_private_key"],
+        )
+
+    # Decrypting a container signed by a revoked key must fail closed
+    # before prompting for the recipient's password.
+    alice_ks_path = env["keys_dir"] / entries["alice"]["keystore_file"]
+    monkeypatch.setattr(
+        getpass, "getpass",
+        lambda *_args, **_kwargs: pytest.fail("Password must not be requested for revoked signer"),
+    )
+    with pytest.raises((KeyLifecycleError, IntegrityError)):
+        decrypt_with_registry(updated_registry, signed_container, "alice", alice_ks_path)
+
+
+def test_d6_11_key_rotation_preserves_access_to_previous_documents(
+    hybrid_environment, monkeypatch
+):
+    """Verify key rotation keeps historical documents decryptable via retired keystores."""
+    pytest.importorskip("ecies")
+    pytest.importorskip("coincurve")
+    from src.crypto.key_lifecycle import (
+        decrypt_with_registry,
+        encrypt_with_registry,
+        rotate_key,
+    )
+
+    env = hybrid_environment
+    entries = env["credentials"]
+    old_alice_key_id = entries["alice"]["key_id"]
+    old_alice_ks_path = env["keys_dir"] / entries["alice"]["keystore_file"]
+
+    # Encrypt a document using Alice's initial active key.
+    legacy_container = encrypt_with_registry(
+        env["registry"], env["payload"], "historical_pre_rotation.txt",
+        {"alice": entries["alice"]["public_key"], "bob": entries["bob"]["public_key"]},
+        env["signer_private_key"],
+    )
+
+    # Rotate Alice's secp256k1 key so the previous key becomes 'retired'.
+    new_alice_entry = rotate_key(
+        env["registry_path"], "alice", "secp256k1", KEY_PASSWORD, env["keys_dir"],
+        registry_password=REGISTRY_PASSWORD, scrypt_n=FAST_SCRYPT_N,
+    )
+    assert new_alice_entry["key_id"] != old_alice_key_id
+
+    rotated_registry = load_registry(env["registry_path"], REGISTRY_PASSWORD)
+    assert rotated_registry["keys"][old_alice_key_id]["status"] == "retired"
+    assert rotated_registry["keys"][new_alice_entry["key_id"]]["status"] == "active"
+
+    # Alice still decrypts documents encrypted prior to rotation.
+    monkeypatch.setattr(getpass, "getpass", lambda *_args, **_kwargs: KEY_PASSWORD)
+    recovered = decrypt_with_registry(
+        rotated_registry, legacy_container, "alice", old_alice_ks_path,
+    )
+    assert recovered == env["payload"]
