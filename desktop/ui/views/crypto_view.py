@@ -124,6 +124,7 @@ class CryptoView(QWidget):
 
         try:
             service = self.context.make_service(reg_password)
+            service.list_keys()
         except Exception as exc:
             self._report_rejection("registry_error", f"Unable to open vault registry: {exc}")
             return None

@@ -116,11 +116,11 @@ class CryptoWorker(QObject):
                 result_path = self._run_decrypt()
             self.finished.emit(result_path)
         except OperationCancelledError as exc:
-            self.error.emit("cancelled", str(exc) or "Operación cancelada.")
+            self.error.emit("cancelled", str(exc) or "Operation cancelled.")
         except FileExistsError as exc:
-            self.error.emit("file_exists", f"El archivo de salida ya existe: {exc}")
+            self.error.emit("file_exists", f"Output file already exists: {exc}")
         except FileNotFoundError as exc:
-            self.error.emit("file_not_found", f"Archivo no encontrado: {exc}")
+            self.error.emit("file_not_found", f"File not found: {exc}")
         except KeyLifecycleError as exc:
             self.error.emit("lifecycle_error", str(exc))
         except KeystoreError as exc:
@@ -130,7 +130,7 @@ class CryptoWorker(QObject):
         except ValueError as exc:
             self.error.emit("validation_error", str(exc))
         except Exception as exc:  # pragma: no cover
-            self.error.emit("unexpected_error", f"Error inesperado: {exc}")
+            self.error.emit("unexpected_error", f"Unexpected error: {exc}")
 
     def _run_encrypt(self) -> Path:
         source = Path(self._params["source"])
