@@ -30,13 +30,15 @@ By default, the application stores its keystores, configurations, and local vaul
 To generate a standalone executable, run the following in PowerShell (Administrator):
 ```powershell
 .\packaging\build_windows.ps1
-
+```
 The executable will be available at dist\SecureDocumentVault\SecureDocumentVault.exe.
 
-Security Limitations
+## Security Limitations
 
-    Passwords are requested via UI dialogs only; they are never saved to disk or passed via command line.
+  
 
-    The application does not sync to the cloud.
+   * The application does not sync to the cloud.
+   * Passwords are requested via UI dialogs only; they are never saved to disk or passed via command line.
+   * Revoked keys are enforced by the underlying D6 engine and cannot be bypassed via the UI.
 
-    Revoked keys are enforced by the underlying D6 engine and cannot be bypassed via the UI.
+ 
