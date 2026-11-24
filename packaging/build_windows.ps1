@@ -7,7 +7,7 @@
 
 $ErrorActionPreference = "Stop"
 
-Write-Host "=== Secure Document Vault - Windows Build ===" -ForegroundColor Cyan
+Write-Host " Secure Document Vault - Windows Build " -ForegroundColor Cyan
 
 # 1. Ensure PyInstaller and dependencies are installed
 Write-Host "Installing dependencies from requirements-desktop.txt..." -ForegroundColor Yellow
@@ -28,5 +28,5 @@ pyinstaller --noconfirm --onedir --windowed `
     --hidden-import "coincurve" `
     desktop/__main__.py
 
-Write-Host "=== Build Complete! ===" -ForegroundColor Green
+Write-Host "Build Complete!" -ForegroundColor Green
 Write-Host "Executable located at: dist\SecureDocumentVault\SecureDocumentVault.exe"

@@ -15,33 +15,33 @@ class SignaturesView(QWidget):
     def init_ui(self):
         layout = QVBoxLayout(self)
 
-        # Título
+        # Title
         title = QLabel("Signature Verification (D5/D6)")
         title.setStyleSheet("font-size: 18px; font-weight: bold; margin-bottom: 10px;")
         layout.addWidget(title)
 
-        # Botón para cargar archivo
+        # Add File Buttom
         self.btn_load = QPushButton("Load D5 Container (.json)")
         self.btn_load.clicked.connect(self.load_container)
         layout.addWidget(self.btn_load)
 
-        # Etiqueta de estado del archivo
+        # File status label
         self.lbl_file_status = QLabel("No container loaded.")
         layout.addWidget(self.lbl_file_status)
 
-        # Input para la llave pública del firmante confiable (Trust Anchor)
+        # Input for the trusted signer's public key (Trust Anchor)
         layout.addWidget(QLabel("Trusted Signer Public Key (Hex):"))
         self.txt_pubkey = QLineEdit()
         self.txt_pubkey.setPlaceholderText("Paste the trusted Ed25519 public key here...")
         layout.addWidget(self.txt_pubkey)
 
-        # Botón para verificar
+        # verify button
         self.btn_verify = QPushButton("Verify Signature")
         self.btn_verify.setEnabled(False)
         self.btn_verify.clicked.connect(self.verify_signature)
         layout.addWidget(self.btn_verify)
 
-        # Área de resultados
+        # results display
         layout.addWidget(QLabel("Verification Results:"))
         self.txt_results = QTextEdit()
         self.txt_results.setReadOnly(True)
@@ -75,7 +75,7 @@ class SignaturesView(QWidget):
             return
 
         try:
-            # Llamada al backend criptográfico existente
+            # call to backend function to verify the signature
             verify_container(self.container_data, pubkey)
             
             signer_id = self.container_data.get("signer_id", "Unknown")

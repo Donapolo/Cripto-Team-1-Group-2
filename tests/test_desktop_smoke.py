@@ -1,7 +1,7 @@
 import pytest
 from PySide6.QtWidgets import QApplication
 
-# Esto asegura que PySide6 esté instalado antes de correr el test
+# pyside6 verification
 pytest.importorskip("PySide6")
 
 from desktop.ui.views.signatures_view import SignaturesView
