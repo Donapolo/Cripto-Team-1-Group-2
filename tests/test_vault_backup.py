@@ -126,3 +126,121 @@ def test_restore_refuses_to_overwrite_existing_files(vault):
     with pytest.raises(KeyBackupError, match="overwrite"):
         restaurar(vault)
     restaurar(vault, overwrite=True)
+
+
+# ---- correcciones de la revision del PR #31 ----
+
+def _estado(reg_path, key_id):
+    return load_registry(reg_path, REG_PW)["keys"][key_id]["status"]
+
+
+def test_old_backup_cannot_undo_a_later_revocation(vault):
+    respaldar(vault)
+    nueva = vault["nueva"]["key_id"]
+    revoke_key(vault["reg"], nueva, "laptop stolen", registry_password=REG_PW,
+               now=T0 + timedelta(days=50))
+    antes = vault["reg"].read_bytes()
+    with pytest.raises(KeyBackupError, match="undo"):
+        restore_vault_backup(vault["tmp"] / "backup", vault["reg"], vault["ks"],
+                             registry_password=REG_PW, overwrite=True)
+    assert vault["reg"].read_bytes() == antes  # no se escribio nada
+    assert _estado(vault["reg"], nueva) == "revoked"
+
+
+def test_old_backup_missing_newer_keys_is_rejected(vault):
+    respaldar(vault)
+    generate_key(vault["reg"], "bob", "secp256k1", PASSWORD, vault["ks"],
+                 now=T0 + timedelta(days=50), **RAPIDO)
+    with pytest.raises(KeyBackupError, match="older"):
+        restore_vault_backup(vault["tmp"] / "backup", vault["reg"], vault["ks"],
+                             registry_password=REG_PW, overwrite=True)
+
+
+def test_restore_over_registry_with_other_password_is_rejected(vault):
+    respaldar(vault)
+    with pytest.raises(KeyBackupError, match="Invalid registry"):
+        restore_vault_backup(vault["tmp"] / "backup", vault["reg"], vault["ks"],
+                             registry_password="otra-password", overwrite=True)
+
+
+def test_failed_backup_leaves_no_partial_files(vault):
+    reg = load_registry(vault["reg"], REG_PW)
+    no_revocadas = [k for k, e in reg["keys"].items() if e["status"] != "revoked"]
+    ultima = max(no_revocadas)  # la ultima en orden: las demas ya se habrian procesado
+    (vault["ks"] / reg["keys"][ultima]["keystore_file"]).unlink()
+    with pytest.raises(KeyBackupError, match="non-revoked"):
+        respaldar(vault)
+    assert not (vault["tmp"] / "backup").exists()
+
+
+def test_write_error_during_restore_rolls_back(vault, monkeypatch):
+    import src.crypto.key_backup as kb
+    respaldar(vault)
+    restaurar(vault)
+    destino_reg = vault["tmp"] / "new" / "registry.json"
+    carpeta = vault["tmp"] / "new" / "keystores"
+    antes = {p.name: p.read_bytes() for p in carpeta.iterdir()}
+    antes_reg = destino_reg.read_bytes()
+    for p in carpeta.iterdir():  # simular keystores danados que el respaldo debe corregir
+        p.write_text("danado", encoding="utf-8")
+    danados = {p.name: p.read_bytes() for p in carpeta.iterdir()}
+
+    original, llamadas = kb.os.replace, []
+    def replace_que_falla(a, b):
+        llamadas.append(b)
+        if len(llamadas) == 2:  # falla a la mitad de la escritura
+            raise OSError("disk full")
+        return original(a, b)
+    monkeypatch.setattr(kb.os, "replace", replace_que_falla)
+    with pytest.raises(KeyBackupError, match="nothing was changed"):
+        restaurar(vault, overwrite=True)
+    monkeypatch.setattr(kb.os, "replace", original)
+
+    assert {p.name: p.read_bytes() for p in carpeta.iterdir()} == danados  # todo como estaba
+    assert destino_reg.read_bytes() == antes_reg
+    assert not list(carpeta.glob("*.tmp"))
+    restaurar(vault, overwrite=True)  # sin la falla, la restauracion si corrige todo
+    assert {p.name: p.read_bytes() for p in carpeta.iterdir()} == antes
+
+
+def test_e2e_old_document_decrypts_after_rotation_and_restore(tmp_path, monkeypatch):
+    pytest.importorskip("ecies")
+    pytest.importorskip("coincurve")
+    import getpass
+    import shutil
+    from src.crypto.key_lifecycle import decrypt_with_registry, encrypt_with_registry
+    from src.crypto.secure_keystore import decrypt_private_key as abrir
+
+    reg, ks = tmp_path / "registry.json", tmp_path / "keystores"
+    alice = generate_key(reg, "alice", "secp256k1", PASSWORD, ks, **RAPIDO)
+    bob = generate_key(reg, "bob", "secp256k1", PASSWORD, ks, **RAPIDO)
+    emisor = generate_key(reg, "sender", "Ed25519", PASSWORD, ks, **RAPIDO)
+    firma = abrir(load_keystore(ks / emisor["keystore_file"]), PASSWORD,
+                  expected_usage="signing", expected_key_id=emisor["key_id"])
+
+    # documento viejo, cifrado para la llave vieja de alice
+    viejo = encrypt_with_registry(load_registry(reg, REG_PW), b"documento viejo", "viejo.txt",
+                                  {"alice": alice["public_key"], "bob": bob["public_key"]}, firma)
+    nueva = rotate_key(reg, "alice", "secp256k1", PASSWORD, ks, **RAPIDO)
+
+    # respaldo completo y perdida total del registro y los keystores
+    create_vault_backup(reg, ks, tmp_path / "backup", registry_password=REG_PW)
+    reg.unlink()
+    shutil.rmtree(ks)
+    restore_vault_backup(tmp_path / "backup", reg, ks, registry_password=REG_PW)
+    restaurado = load_registry(reg, REG_PW)
+    assert restaurado["keys"][alice["key_id"]]["status"] == "retired"
+
+    monkeypatch.setattr(getpass, "getpass", lambda *a, **k: PASSWORD)
+    # la llave retirada sigue abriendo el documento viejo
+    assert decrypt_with_registry(restaurado, viejo, "alice",
+                                 ks / alice["keystore_file"]) == b"documento viejo"
+    # pero ya no se puede cifrar nada nuevo para ella
+    with pytest.raises(KeyLifecycleError):
+        encrypt_with_registry(restaurado, b"nuevo", "nuevo.txt",
+                              {"alice": alice["public_key"], "bob": bob["public_key"]}, firma)
+    # y lo nuevo va para la llave nueva
+    nuevo = encrypt_with_registry(restaurado, b"documento nuevo", "nuevo.txt",
+                                  {"alice": nueva["public_key"], "bob": bob["public_key"]}, firma)
+    assert decrypt_with_registry(restaurado, nuevo, "alice",
+                                 ks / nueva["keystore_file"]) == b"documento nuevo"
