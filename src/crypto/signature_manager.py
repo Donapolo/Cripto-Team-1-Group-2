@@ -141,3 +141,47 @@ def main():
 
 if __name__ == "__main__":
     main()
+# D6: Policy-aware entry points. The primitives above are deliberately preserved
+# for D5 interoperability and pure mathematical signature tests. Applications
+# MUST use these wrappers with an authenticated D6 registry.
+
+def _registered_signer_from_private(registry, private_key_hex, *, now=None):
+    """Resolve and authorize the Ed25519 signer before using its private key."""
+    from src.crypto.key_lifecycle import check_key_usable
+
+    public_hex = public_key_from_private(private_key_hex)
+    signer_id = signer_id_from_ed25519_public_key(bytes.fromhex(public_hex))
+    entry = check_key_usable(registry, signer_id, "sign", now=now)
+    if entry["public_key"] != public_hex:
+        raise SignatureVerificationError("Registered signer public key mismatch.")
+    return entry
+
+
+def sign_payload_with_registry(registry, private_key_hex, payload, *, now=None):
+    """Sign only if the private key belongs to an authorized D6 signer."""
+    _registered_signer_from_private(registry, private_key_hex, now=now)
+    return sign_payload(private_key_hex, payload)
+
+
+def verify_payload_with_registry(registry, signer_id, payload, signature, *, now=None):
+    """Verify using only a trusted, non-revoked Ed25519 key from D6."""
+    from src.crypto.key_lifecycle import check_key_usable
+
+    entry = check_key_usable(registry, signer_id, "verify", now=now)
+    return verify_payload(entry["public_key"], payload, signature)
+
+
+def sign_container_with_registry(registry, metadata, recipients, nonce,
+                                 ciphertext, tag, private_key_hex, *, now=None):
+    """Authorize Ed25519 signer first; then build the existing signed D5 container."""
+    _registered_signer_from_private(registry, private_key_hex, now=now)
+    return sign_container(metadata, recipients, nonce, ciphertext, tag, private_key_hex)
+
+
+def verify_container_with_registry(registry, container, *, now=None):
+    """Validate D5 format and D6 signer status before cryptographic verification."""
+    from src.crypto.key_lifecycle import check_key_usable
+
+    validate_container(container)
+    entry = check_key_usable(registry, container["signer_id"], "verify", now=now)
+    return verify_container(container, entry["public_key"])
