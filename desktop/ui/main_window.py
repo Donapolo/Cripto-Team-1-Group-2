@@ -179,6 +179,16 @@ class MainWindow(QMainWindow):
             self._page_indices[page_id] = self.stack.addWidget(view)
             self._pages[page_id] = view
 
+        documents_page = self._pages.get("documents")
+        if documents_page is not None and hasattr(documents_page, "send_to_crypto"):
+            documents_page.send_to_crypto.connect(self._on_send_to_crypto)
+
+    def _on_send_to_crypto(self, path: object) -> None:
+        self.navigate("crypto")
+        crypto_page = self._pages.get("crypto")
+        if crypto_page is not None and hasattr(crypto_page, "set_input_file"):
+            crypto_page.set_input_file(path)
+
     def _external_view(self, page_id: str, label: str) -> QWidget:
         module_name, class_name, assignee = EXTERNAL_VIEWS[page_id]
         if find_spec(module_name) is None:

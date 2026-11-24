@@ -9,3 +9,8 @@ venv/
 
 # Local secrets/configuration
 .env
+
+# Python & pytest caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
