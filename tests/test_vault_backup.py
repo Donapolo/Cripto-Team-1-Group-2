@@ -244,3 +244,42 @@ def test_e2e_old_document_decrypts_after_rotation_and_restore(tmp_path, monkeypa
                                   {"alice": nueva["public_key"], "bob": bob["public_key"]}, firma)
     assert decrypt_with_registry(restaurado, nuevo, "alice",
                                  ks / nueva["keystore_file"]) == b"documento nuevo"
+
+
+def test_failed_rollback_is_reported_not_hidden(vault, monkeypatch):
+    import pathlib
+    import src.crypto.key_backup as kb
+    respaldar(vault)
+    restaurar(vault)
+    original_replace, original_write = kb.os.replace, pathlib.Path.write_bytes
+    llamadas = []
+    def replace_que_falla(a, b):
+        llamadas.append(b)
+        if len(llamadas) == 2:
+            raise OSError("disk full")
+        return original_replace(a, b)
+    def write_que_falla(self, datos):  # el regreso a como estaba tambien falla
+        raise OSError("disk full")
+    monkeypatch.setattr(kb.os, "replace", replace_que_falla)
+    monkeypatch.setattr(pathlib.Path, "write_bytes", write_que_falla)
+    with pytest.raises(KeyBackupError, match="could not be restored") as error:
+        restaurar(vault, overwrite=True)
+    assert "nothing was changed" not in str(error.value)
+
+
+def test_temp_file_is_cleaned_if_its_write_fails(vault, monkeypatch):
+    import pathlib
+    respaldar(vault)
+    original = pathlib.Path.write_text
+    def write_que_falla(self, *a, **k):
+        if self.name.endswith(".tmp"):
+            original(self, "a medias", encoding="utf-8")  # alcanza a crear el archivo...
+            raise OSError("disk full")                    # ...y luego falla
+        return original(self, *a, **k)
+    monkeypatch.setattr(pathlib.Path, "write_text", write_que_falla)
+    with pytest.raises(KeyBackupError, match="nothing was changed"):
+        restaurar(vault)
+    monkeypatch.setattr(pathlib.Path, "write_text", original)
+    nuevo = vault["tmp"] / "new"
+    assert not list(nuevo.rglob("*.tmp"))
+    assert not list(nuevo.rglob("*.json"))

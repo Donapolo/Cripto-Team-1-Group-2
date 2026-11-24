@@ -157,6 +157,7 @@ def _aplicar(cambios):
     cambios: lista de (ruta, texto). 1) escribe cada texto en un temporal; 2) guarda
     el contenido viejo de lo que se va a reemplazar; 3) renombra los temporales.
     Si algo falla, borra los temporales y regresa lo ya reemplazado a como estaba.
+    Si regresarlo tambien falla, lo dice: no afirma que nada cambio.
     """
     temporales, viejos, hechos = [], {}, []
     try:
@@ -164,17 +165,18 @@ def _aplicar(cambios):
             ruta = Path(ruta)
             ruta.parent.mkdir(parents=True, exist_ok=True)
             tmp = ruta.with_name(ruta.name + ".tmp")
+            temporales.append((tmp, ruta))  # se anota ANTES de escribir, para limpiarlo si falla
+            viejos[ruta] = ruta.read_bytes() if ruta.exists() else None
             tmp.write_text(texto, encoding="utf-8")
             try:
                 os.chmod(tmp, 0o600)  # en Windows puede no aplicar
             except OSError:
                 pass
-            temporales.append((tmp, ruta))
-            viejos[ruta] = ruta.read_bytes() if ruta.exists() else None
         for tmp, ruta in temporales:
             os.replace(tmp, ruta)
             hechos.append(ruta)
     except OSError as e:
+        sin_recuperar = []
         for ruta in reversed(hechos):  # deshacer lo ya reemplazado
             try:
                 if viejos[ruta] is None:
@@ -182,9 +184,16 @@ def _aplicar(cambios):
                 else:
                     ruta.write_bytes(viejos[ruta])
             except OSError:
-                pass
+                sin_recuperar.append(str(ruta))
         for tmp, _ in temporales:
-            tmp.unlink(missing_ok=True)
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
+        if sin_recuperar:
+            raise KeyBackupError(
+                f"Write failed ({e}) and these files could not be restored: "
+                f"{', '.join(sin_recuperar)}. Restore them manually from the backup.") from None
         raise KeyBackupError(f"Write failed, nothing was changed: {e}") from None
 
 
