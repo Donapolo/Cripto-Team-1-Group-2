@@ -23,12 +23,12 @@ from desktop.ui.views.settings_view import SettingsView
 
 
 NAVIGATION = [
-    ("home", "Inicio", "home", "Accesos rápidos y estado del entorno"),
-    ("documents", "Documentos", "folder", "Selecciona tus documentos locales"),
-    ("crypto", "Cifrar / Descifrar", "lock", "Protección y recuperación de archivos"),
-    ("signatures", "Firmas", "signature", "Verificación de contenedores firmados"),
-    ("keys", "Mis claves", "key", "Identidades, estados y respaldos"),
-    ("settings", "Configuración", "settings", "Almacenamiento y preferencias locales"),
+    ("home", "Home", "home", "Quick actions and local environment status"),
+    ("documents", "Documents", "folder", "Browse local documents"),
+    ("crypto", "Encrypt / Decrypt", "lock", "Protect and recover files"),
+    ("signatures", "Signatures", "signature", "Verify signed containers"),
+    ("keys", "My Keys", "key", "Identities, key status, and backups"),
+    ("settings", "Settings", "settings", "Local storage and preferences"),
 ]
 
 # Contract: filename, import path, exported QWidget subclass and responsible team member.
@@ -51,12 +51,12 @@ class PlaceholderView(QWidget):
         label = QLabel(page_name)
         label.setObjectName("HeroTitle")
         layout.addWidget(label)
-        status = QLabel(f"Módulo en desarrollo · Responsable: {assignee}")
+        status = QLabel(f"Module in development · Assigned to: {assignee}")
         status.setObjectName("MutedText")
         layout.addWidget(status)
         info = QLabel(
-            "Esta sección todavía no está conectada. "
-            "Se mostrará la pantalla real cuando se integre el archivo del equipo."
+            "This section is not connected yet. "
+            "The actual view will appear once the team module is integrated."
         )
         info.setWordWrap(True)
         info.setObjectName("MutedText")
@@ -71,7 +71,7 @@ class FailedView(QWidget):
         super().__init__(parent)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(28, 28, 28, 28)
-        title = QLabel(f"No se pudo cargar: {page_name}")
+        title = QLabel(f"Unable to load: {page_name}")
         title.setObjectName("SectionTitle")
         details = QLabel(detail)
         details.setWordWrap(True)
@@ -142,7 +142,7 @@ class MainWindow(QMainWindow):
         layout.addLayout(brand_line)
         layout.addSpacing(33)
 
-        section = named(QLabel("NAVEGACIÓN"), "SidebarSection")
+        section = named(QLabel("NAVIGATION"), "SidebarSection")
         layout.addWidget(section)
         layout.addSpacing(4)
 
@@ -161,7 +161,7 @@ class MainWindow(QMainWindow):
             layout.addWidget(button)
             self._nav_buttons[page_id] = button
 
-        footnote = QLabel("D2–D6  ·  Aplicación local")
+        footnote = QLabel("D2–D6  ·  Local application")
         footnote.setObjectName("MutedText")
         footnote.setStyleSheet("font-size:11px;")
         layout.addWidget(footnote)
@@ -190,7 +190,7 @@ class MainWindow(QMainWindow):
                 raise TypeError(f"{class_name} must be a QWidget subclass")
             return view
         except Exception as exc:
-            return FailedView(label, f"Revisa {module_name}.{class_name}: {exc}", self.stack)
+            return FailedView(label, f"Check {module_name}.{class_name}: {exc}", self.stack)
 
     def navigate(self, page_id: str) -> None:
         """Shared navigation API for sidebar, home cards and future modules."""

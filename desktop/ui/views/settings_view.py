@@ -17,11 +17,11 @@ class SettingsView(QWidget):
         layout.setContentsMargins(28, 28, 28, 28)
         layout.setSpacing(18)
 
-        header = named(QLabel("Carpeta de datos locales"), "SectionTitle")
+        header = named(QLabel("Local data folder"), "SectionTitle")
         layout.addWidget(header)
         description = QLabel(
-            "Aquí se guarda el registro autenticado y los keystores cifrados. "
-            "Cambiar la carpeta cambia el vault seleccionado; no mueve ni elimina archivos."
+            "The authenticated registry and encrypted keystores are stored here. "
+            "Changing this folder selects a different vault; it does not move or delete files."
         )
         description.setWordWrap(True)
         description.setObjectName("MutedText")
@@ -35,10 +35,10 @@ class SettingsView(QWidget):
         self.path_input.setReadOnly(True)
         panel_layout.addWidget(self.path_input)
         buttons = QHBoxLayout()
-        browse = QPushButton("Seleccionar carpeta")
+        browse = QPushButton("Choose folder")
         browse.setObjectName("PrimaryButton")
         browse.clicked.connect(self.choose_folder)
-        reset = QPushButton("Restablecer ruta predeterminada")
+        reset = QPushButton("Restore default location")
         reset.setObjectName("SecondaryButton")
         reset.clicked.connect(self.reset_default)
         buttons.addWidget(browse)
@@ -48,8 +48,8 @@ class SettingsView(QWidget):
         layout.addWidget(panel)
 
         note = QLabel(
-            "La aplicación solo guarda esta preferencia de ubicación. "
-            "No guarda contraseñas ni claves privadas en la configuración."
+            "The application only stores this folder preference. "
+            "It does not store passwords or private keys in settings."
         )
         note.setWordWrap(True)
         note.setObjectName("MutedText")
@@ -59,7 +59,7 @@ class SettingsView(QWidget):
 
     def choose_folder(self) -> None:
         directory = QFileDialog.getExistingDirectory(
-            self, "Seleccionar carpeta de datos", str(self.context.data_dir)
+            self, "Select data folder", str(self.context.data_dir)
         )
         if directory:
             self._confirm_change(directory)
@@ -72,9 +72,9 @@ class SettingsView(QWidget):
             return
         answer = QMessageBox.question(
             self,
-            "Cambiar carpeta local",
-            "La aplicación utilizará otro registro de claves. "
-            "Los archivos actuales no se moverán. ¿Continuar?",
+            "Change local data folder",
+            "The application will use a different key registry. "
+            "Existing files will not be moved. Continue?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )

@@ -34,11 +34,11 @@ class HomeView(QWidget):
         left.setSpacing(10)
         eyebrow = QLabel("SECURE DOCUMENT VAULT  /  DESKTOP")
         eyebrow.setStyleSheet("color:#55B1FF; font-weight:700; font-size:11px;")
-        title = named(QLabel("Tus documentos, bajo tu control."), "HeroTitle")
+        title = named(QLabel("Your documents, under your control."), "HeroTitle")
         title.setWordWrap(True)
         subtitle = QLabel(
-            "Cifra, descifra y administra tus claves desde una aplicación local. "
-            "Tus operaciones usan el motor criptográfico del proyecto D2–D6.",
+            "Encrypt, decrypt, and manage your keys in a local application. "
+            "Operations use the project's D2–D6 cryptographic engine.",
         )
         subtitle.setObjectName("HeroSubtitle")
         subtitle.setWordWrap(True)
@@ -52,16 +52,16 @@ class HomeView(QWidget):
         hero_layout.addWidget(shield, 0, Qt.AlignmentFlag.AlignTop)
         layout.addWidget(hero)
 
-        section = named(QLabel("¿Qué quieres hacer hoy?"), "SectionTitle")
+        section = named(QLabel("What would you like to do?"), "SectionTitle")
         layout.addWidget(section)
 
         grid = QGridLayout()
         grid.setSpacing(16)
         actions = [
-            ("Cifrar documento", "Protege un archivo y fírmalo para dos o más destinatarios.", "lock", "crypto"),
-            ("Descifrar documento", "Recupera un archivo autorizado después de verificar su integridad.", "unlock", "crypto"),
-            ("Verificar firmas", "Consulta la validez y autorización del firmante de un contenedor.", "signature", "signatures"),
-            ("Administrar claves", "Consulta tus claves locales y su estado de ciclo de vida.", "key", "keys"),
+            ("Encrypt document", "Protect a file and sign it for two or more recipients.", "lock", "crypto"),
+            ("Decrypt document", "Recover an authorized file after verifying its integrity.", "unlock", "crypto"),
+            ("Verify signatures", "Check a container's signature and signer authorization.", "signature", "signatures"),
+            ("Manage keys", "View your local keys and their lifecycle status.", "key", "keys"),
         ]
         for index, (title_text, description, symbol, destination) in enumerate(actions):
             card = self._card(title_text, description, symbol, destination)
@@ -72,7 +72,7 @@ class HomeView(QWidget):
         status_layout = QVBoxLayout(panel)
         status_layout.setContentsMargins(20, 17, 20, 17)
         status_layout.setSpacing(6)
-        status_title = QLabel("Entorno local")
+        status_title = QLabel("Local environment")
         status_title.setStyleSheet("font-weight:700;")
         self.status_label = QLabel()
         self.status_label.setObjectName("MutedText")
@@ -109,7 +109,7 @@ class HomeView(QWidget):
         desc.setWordWrap(True)
         box.addWidget(desc)
         box.addStretch()
-        action = QPushButton("Abrir módulo")
+        action = QPushButton("Open module")
         action.setObjectName("PrimaryButton")
         action.setCursor(Qt.CursorShape.PointingHandCursor)
         action.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
@@ -120,8 +120,8 @@ class HomeView(QWidget):
     def refresh_status(self, _path: str = "") -> None:
         # File presence is not equivalent to integrity/authentication verification.
         self.status_label.setText(
-            "Registro local detectado (autenticidad pendiente de validar)."
+            "Local registry found (authenticity has not been verified)."
             if self.context.registry_exists
-            else "No se ha detectado un registro local en esta carpeta."
+            else "No local registry found in this folder."
         )
-        self.data_label.setText(f"Carpeta configurada: {self.context.data_dir}")
+        self.data_label.setText(f"Configured folder: {self.context.data_dir}")

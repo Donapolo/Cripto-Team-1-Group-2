@@ -28,7 +28,7 @@ class DesktopContext(QObject):
     def _normalize(value: str | Path) -> Path:
         text = str(value).strip()
         if not text:
-            raise ValueError("Selecciona una carpeta de datos válida.")
+            raise ValueError("Select a valid data folder.")
         return Path(text).expanduser().resolve(strict=False)
 
     @property
