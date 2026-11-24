@@ -519,3 +519,124 @@ def test_d6_13_direct_hybrid_vault_blocks_revoked_recipient_and_signer(
             trusted_signers=initial_signers,
             registry=reg_after_signer_revoke,
         )
+def test_d6_13_direct_hybrid_vault_blocks_revoked_recipient(
+    hybrid_environment, monkeypatch
+):
+    """Verify direct hybrid_vault calls block a revoked recipient key."""
+    pytest.importorskip("ecies")
+    pytest.importorskip("coincurve")
+    from src.crypto.hybrid_vault import (
+        decrypt_hybrid_with_keystore,
+        encrypt_hybrid,
+    )
+    from src.crypto.key_lifecycle import build_trusted_signers
+
+    env = hybrid_environment
+    entries = env["credentials"]
+    recipients = {
+        "alice": entries["alice"]["public_key"],
+        "bob": entries["bob"]["public_key"],
+    }
+    trusted_signers = build_trusted_signers(env["registry"])
+
+    container = encrypt_hybrid(
+        env["payload"],
+        "direct_revoked_recipient.txt",
+        recipients,
+        signing_private_key=env["signer_private_key"],
+        registry=env["registry"],
+    )
+
+    revoke_key(
+        env["registry_path"],
+        entries["alice"]["key_id"],
+        "recipient key revoked",
+        registry_password=REGISTRY_PASSWORD,
+    )
+    updated_registry = load_registry(env["registry_path"], REGISTRY_PASSWORD)
+
+    with pytest.raises(KeyLifecycleError, match="revoked"):
+        encrypt_hybrid(
+            b"after recipient revoke",
+            "after_recipient_revoke.txt",
+            recipients,
+            signing_private_key=env["signer_private_key"],
+            registry=updated_registry,
+        )
+
+    alice_ks_path = env["keys_dir"] / entries["alice"]["keystore_file"]
+    monkeypatch.setattr(
+        getpass,
+        "getpass",
+        lambda *_args, **_kwargs: pytest.fail("Password must not be requested for revoked key"),
+    )
+    with pytest.raises(KeyLifecycleError, match="revoked"):
+        decrypt_hybrid_with_keystore(
+            container,
+            "alice",
+            alice_ks_path,
+            trusted_signers=trusted_signers,
+            registry=updated_registry,
+        )
+
+
+def test_d6_14_direct_hybrid_vault_blocks_revoked_signer(
+    hybrid_environment, monkeypatch
+):
+    """Verify direct hybrid_vault calls block a revoked Ed25519 signing key."""
+    pytest.importorskip("ecies")
+    pytest.importorskip("coincurve")
+    from src.crypto.hybrid_vault import (
+        IntegrityError,
+        decrypt_hybrid_with_keystore,
+        encrypt_hybrid,
+    )
+    from src.crypto.key_lifecycle import build_trusted_signers
+
+    env = hybrid_environment
+    entries = env["credentials"]
+    recipients = {
+        "alice": entries["alice"]["public_key"],
+        "bob": entries["bob"]["public_key"],
+    }
+    initial_signers = build_trusted_signers(env["registry"])
+
+    container = encrypt_hybrid(
+        env["payload"],
+        "direct_revoked_signer.txt",
+        recipients,
+        signing_private_key=env["signer_private_key"],
+        registry=env["registry"],
+    )
+
+    revoke_key(
+        env["registry_path"],
+        entries["sender"]["key_id"],
+        "signer key revoked",
+        registry_password=REGISTRY_PASSWORD,
+    )
+    updated_registry = load_registry(env["registry_path"], REGISTRY_PASSWORD)
+
+    with pytest.raises(KeyLifecycleError, match="revoked"):
+        encrypt_hybrid(
+            b"after signer revoke",
+            "after_signer_revoke.txt",
+            recipients,
+            signing_private_key=env["signer_private_key"],
+            registry=updated_registry,
+        )
+
+    bob_ks_path = env["keys_dir"] / entries["bob"]["keystore_file"]
+    monkeypatch.setattr(
+        getpass,
+        "getpass",
+        lambda *_args, **_kwargs: pytest.fail("Password must not be requested for revoked signer"),
+    )
+    with pytest.raises((KeyLifecycleError, IntegrityError)):
+        decrypt_hybrid_with_keystore(
+            container,
+            "bob",
+            bob_ks_path,
+            trusted_signers=initial_signers,
+            registry=updated_registry,
+        )
