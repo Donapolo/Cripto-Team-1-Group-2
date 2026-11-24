@@ -19,6 +19,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from desktop.context import DesktopContext
+
 
 class DocumentsView(QWidget):
     """Allows selecting local files without copying them and inspecting status."""
@@ -26,11 +28,19 @@ class DocumentsView(QWidget):
     files_changed = Signal(object)
     send_to_crypto = Signal(object)
 
-    def __init__(self, parent: Optional[QWidget] = None) -> None:
+    def __init__(
+        self,
+        context: Optional[DesktopContext] = None,
+        parent: Optional[QWidget] = None,
+    ) -> None:
         super().__init__(parent)
+        self.context = context
         self._documents: list[Path] = []
         self._build_ui()
         self._refresh_table()
+
+        if self.context is not None:
+            self.context.data_dir_changed.connect(lambda _path: self.refresh_statuses())
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
@@ -38,10 +48,10 @@ class DocumentsView(QWidget):
         layout.setSpacing(12)
 
         header_layout = QHBoxLayout()
-        title_label = QLabel("Documentos locales")
+        title_label = QLabel("Local Documents")
         title_label.setStyleSheet("font-size: 18px; font-weight: 600;")
 
-        self._summary_label = QLabel("0 archivos seleccionados")
+        self._summary_label = QLabel("0 files selected")
         self._summary_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
 
         header_layout.addWidget(title_label)
@@ -50,11 +60,11 @@ class DocumentsView(QWidget):
         layout.addLayout(header_layout)
 
         actions_layout = QHBoxLayout()
-        self._add_btn = QPushButton("Seleccionar archivos...")
-        self._refresh_btn = QPushButton("Actualizar estado")
-        self._remove_btn = QPushButton("Quitar selección")
-        self._clear_btn = QPushButton("Limpiar lista")
-        self._use_crypto_btn = QPushButton("Usar en Cifrar / Descifrar")
+        self._add_btn = QPushButton("Select Files...")
+        self._refresh_btn = QPushButton("Refresh Status")
+        self._remove_btn = QPushButton("Remove Selected")
+        self._clear_btn = QPushButton("Clear List")
+        self._use_crypto_btn = QPushButton("Use in Encrypt / Decrypt")
 
         self._add_btn.clicked.connect(self._on_browse_files)
         self._refresh_btn.clicked.connect(self.refresh_statuses)
@@ -71,7 +81,7 @@ class DocumentsView(QWidget):
         layout.addLayout(actions_layout)
 
         self._table = QTableWidget(0, 3, self)
-        self._table.setHorizontalHeaderLabels(["Nombre", "Ruta", "Estado"])
+        self._table.setHorizontalHeaderLabels(["Name", "Path", "Status"])
         self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self._table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self._table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -89,12 +99,12 @@ class DocumentsView(QWidget):
     def describe_file_status(path: Path) -> str:
         """Return a readable status for a local path without copying or modifying it."""
         if not path.exists():
-            return "No encontrado"
+            return "Not found"
         if path.is_dir():
-            return "Directorio"
+            return "Directory"
         if not path.is_file():
-            return "No es archivo regular"
-        return "Disponible"
+            return "Not a regular file"
+        return "Available"
 
     def add_files(self, paths: Iterable[str | Path]) -> int:
         """Register local file paths in place without copying them."""
@@ -154,9 +164,9 @@ class DocumentsView(QWidget):
     def _on_browse_files(self) -> None:
         files, _ = QFileDialog.getOpenFileNames(
             self,
-            "Seleccionar archivos locales",
+            "Select Local Files",
             "",
-            "Todos los archivos (*)",
+            "All Files (*)",
         )
         if files:
             self.add_files(files)
@@ -183,7 +193,7 @@ class DocumentsView(QWidget):
 
         count = len(self._documents)
         self._summary_label.setText(
-            f"{count} archivo seleccionado" if count == 1 else f"{count} archivos seleccionados"
+            f"{count} file selected" if count == 1 else f"{count} files selected"
         )
         self._sync_action_states()
 

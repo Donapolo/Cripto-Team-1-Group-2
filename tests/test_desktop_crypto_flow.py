@@ -1,4 +1,4 @@
-"""Tests for non-blocking crypto worker, documents view, and crypto view flows."""
+"""Tests for non-blocking crypto worker, documents view, crypto view, and MainWindow integration."""
 
 from pathlib import Path
 
@@ -6,6 +6,8 @@ import pytest
 from PySide6.QtCore import QThread
 from PySide6.QtWidgets import QApplication
 
+from desktop.context import DesktopContext
+from desktop.ui.main_window import FailedView, MainWindow, PlaceholderView
 from desktop.ui.views.crypto_view import CryptoView
 from desktop.ui.views.documents_view import DocumentsView
 from desktop.workers.crypto_worker import CryptoWorker
@@ -40,6 +42,7 @@ def vault_env(tmp_path):
 
     return {
         "service": service,
+        "data_dir": data_dir,
         "source_file": source_file,
         "payload": payload,
         "tmp_path": tmp_path,
@@ -203,13 +206,13 @@ def test_documents_view_tracks_local_files_without_copying(qt_app, tmp_path):
     assert view.selected_paths() == [source_a, source_b]
     assert view._table.rowCount() == 2
     assert view._table.item(0, 0).text() == "nota_a.txt"
-    assert view._table.item(0, 2).text() == "Disponible"
+    assert view._table.item(0, 2).text() == "Available"
     assert source_a.read_text(encoding="utf-8") == "alpha"
     assert source_b.read_text(encoding="utf-8") == "beta"
 
     source_b.unlink()
     view.refresh_statuses()
-    assert view._table.item(1, 2).text() == "No encontrado"
+    assert view._table.item(1, 2).text() == "Not found"
 
 
 def test_crypto_view_validates_recipients_and_prevents_overwrite(qt_app, vault_env):
@@ -229,7 +232,7 @@ def test_crypto_view_validates_recipients_and_prevents_overwrite(qt_app, vault_e
     view._enc_rec3_combo.setCurrentText("")
     view._enc_extra_recipients_edit.clear()
     view._start_encrypt()
-    assert "Rechazada" in view._status_badge.text()
+    assert "Rejected" in view._status_badge.text()
 
     container_path = tmp_path / "valid_out.d5.json"
     view._enc_output_edit.setText(str(container_path))
@@ -248,8 +251,32 @@ def test_crypto_view_validates_recipients_and_prevents_overwrite(qt_app, vault_e
     assert container_path.exists(), (
         f"badge={view._status_badge.text()!r} | log={view._result_log.toPlainText()!r}"
     )
-    assert "Concluida" in view._status_badge.text()
+    assert "Completed" in view._status_badge.text()
 
     view._enc_output_edit.setText(str(container_path))
     view._start_encrypt()
-    assert "Rechazada" in view._status_badge.text()
+    assert "Rejected" in view._status_badge.text()
+
+
+def test_main_window_opens_documents_and_crypto_views_and_navigates(qt_app, tmp_path):
+    sample_file = tmp_path / "spec.txt"
+    sample_file.write_text("specification", encoding="utf-8")
+
+    context = DesktopContext(data_dir=tmp_path / "vault")
+    window = MainWindow(context)
+
+    window.navigate("documents")
+    assert window.current_page == "documents"
+    docs_page = window._pages["documents"]
+    assert isinstance(docs_page, DocumentsView)
+    assert not isinstance(docs_page, (PlaceholderView, FailedView))
+
+    docs_page.add_files([sample_file])
+    docs_page.send_to_crypto.emit(sample_file)
+    qt_app.processEvents()
+
+    assert window.current_page == "crypto"
+    crypto_page = window._pages["crypto"]
+    assert isinstance(crypto_page, CryptoView)
+    assert not isinstance(crypto_page, (PlaceholderView, FailedView))
+    assert crypto_page._enc_source_edit.text() == str(sample_file)
