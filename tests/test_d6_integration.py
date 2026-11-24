@@ -278,3 +278,365 @@ def test_d6_09_tampered_signed_container_fails_before_password_prompt(
     )
     with pytest.raises(IntegrityError):
         decrypt_with_registry(env["registry"], tampered, "alice", alice_path)
+
+
+def test_d6_10_revoked_signing_key_blocked_for_new_and_existing_containers(
+    hybrid_environment, monkeypatch
+):
+    """Verify revoked Ed25519 signing keys are blocked for new and existing containers."""
+    pytest.importorskip("ecies")
+    pytest.importorskip("coincurve")
+    from src.crypto.hybrid_vault import IntegrityError
+    from src.crypto.key_lifecycle import decrypt_with_registry, encrypt_with_registry
+
+    env = hybrid_environment
+    entries = env["credentials"]
+    recipients = {
+        "alice": entries["alice"]["public_key"],
+        "bob": entries["bob"]["public_key"],
+    }
+
+    # Document signed before revoking the sender's Ed25519 key.
+    signed_container = encrypt_with_registry(
+        env["registry"], env["payload"], "signed_before_revocation.txt",
+        recipients, env["signer_private_key"],
+    )
+
+    # Revoke the sender's signing key in the registry.
+    revoke_key(
+        env["registry_path"], entries["sender"]["key_id"],
+        "signing key compromised", registry_password=REGISTRY_PASSWORD,
+    )
+    updated_registry = load_registry(env["registry_path"], REGISTRY_PASSWORD)
+
+    # New containers cannot be encrypted/signed with a revoked signing key.
+    with pytest.raises(KeyLifecycleError, match="revoked"):
+        encrypt_with_registry(
+            updated_registry, b"new document", "new.txt",
+            recipients, env["signer_private_key"],
+        )
+
+    # Decrypting a container signed by a revoked key must fail closed
+    # before prompting for the recipient's password.
+    alice_ks_path = env["keys_dir"] / entries["alice"]["keystore_file"]
+    monkeypatch.setattr(
+        getpass, "getpass",
+        lambda *_args, **_kwargs: pytest.fail("Password must not be requested for revoked signer"),
+    )
+    with pytest.raises((KeyLifecycleError, IntegrityError)):
+        decrypt_with_registry(updated_registry, signed_container, "alice", alice_ks_path)
+
+
+def test_d6_11_key_rotation_preserves_access_to_previous_documents(
+    hybrid_environment, monkeypatch
+):
+    """Verify key rotation keeps historical documents decryptable via retired keystores."""
+    pytest.importorskip("ecies")
+    pytest.importorskip("coincurve")
+    from src.crypto.key_lifecycle import (
+        decrypt_with_registry,
+        encrypt_with_registry,
+        rotate_key,
+    )
+
+    env = hybrid_environment
+    entries = env["credentials"]
+    old_alice_key_id = entries["alice"]["key_id"]
+    old_alice_ks_path = env["keys_dir"] / entries["alice"]["keystore_file"]
+
+    # Encrypt a document using Alice's initial active key.
+    legacy_container = encrypt_with_registry(
+        env["registry"], env["payload"], "historical_pre_rotation.txt",
+        {"alice": entries["alice"]["public_key"], "bob": entries["bob"]["public_key"]},
+        env["signer_private_key"],
+    )
+
+    # Rotate Alice's secp256k1 key so the previous key becomes 'retired'.
+    new_alice_entry = rotate_key(
+        env["registry_path"], "alice", "secp256k1", KEY_PASSWORD, env["keys_dir"],
+        registry_password=REGISTRY_PASSWORD, scrypt_n=FAST_SCRYPT_N,
+    )
+    assert new_alice_entry["key_id"] != old_alice_key_id
+
+    rotated_registry = load_registry(env["registry_path"], REGISTRY_PASSWORD)
+    assert rotated_registry["keys"][old_alice_key_id]["status"] == "retired"
+    assert rotated_registry["keys"][new_alice_entry["key_id"]]["status"] == "active"
+
+    # Alice still decrypts documents encrypted prior to rotation.
+    monkeypatch.setattr(getpass, "getpass", lambda *_args, **_kwargs: KEY_PASSWORD)
+    recovered = decrypt_with_registry(
+        rotated_registry, legacy_container, "alice", old_alice_ks_path,
+    )
+    assert recovered == env["payload"]
+
+
+def test_d6_12_direct_hybrid_vault_encrypt_and_decrypt_with_registry(
+    hybrid_environment, monkeypatch
+):
+    """Verify direct calls to hybrid_vault functions enforce registry lifecycle states."""
+    pytest.importorskip("ecies")
+    pytest.importorskip("coincurve")
+    from src.crypto.hybrid_vault import (
+        decrypt_hybrid,
+        decrypt_hybrid_with_keystore,
+        encrypt_hybrid,
+    )
+    from src.crypto.key_lifecycle import build_trusted_signers
+
+    env = hybrid_environment
+    entries = env["credentials"]
+    recipients = {
+        "alice": entries["alice"]["public_key"],
+        "bob": entries["bob"]["public_key"],
+    }
+    trusted_signers = build_trusted_signers(env["registry"])
+
+    container = encrypt_hybrid(
+        env["payload"],
+        "direct_hybrid.txt",
+        recipients,
+        signing_private_key=env["signer_private_key"],
+        registry=env["registry"],
+    )
+
+    alice_ks_path = env["keys_dir"] / entries["alice"]["keystore_file"]
+    monkeypatch.setattr(getpass, "getpass", lambda *_args, **_kwargs: KEY_PASSWORD)
+    alice_private_key = decrypt_private_key(
+        load_keystore(alice_ks_path),
+        KEY_PASSWORD,
+        expected_usage="decryption",
+        expected_key_id=entries["alice"]["key_id"],
+    )
+
+    assert (
+        decrypt_hybrid(
+            container,
+            "alice",
+            alice_private_key,
+            trusted_signers=trusted_signers,
+            registry=env["registry"],
+        )
+        == env["payload"]
+    )
+    assert (
+        decrypt_hybrid_with_keystore(
+            container,
+            "alice",
+            alice_ks_path,
+            trusted_signers=trusted_signers,
+            registry=env["registry"],
+        )
+        == env["payload"]
+    )
+
+
+def test_d6_13_direct_hybrid_vault_blocks_revoked_recipient_and_signer(
+    hybrid_environment, monkeypatch
+):
+    """Verify direct hybrid_vault calls block revoked keys before password prompts."""
+    pytest.importorskip("ecies")
+    pytest.importorskip("coincurve")
+    from src.crypto.hybrid_vault import (
+        IntegrityError,
+        decrypt_hybrid_with_keystore,
+        encrypt_hybrid,
+    )
+    from src.crypto.key_lifecycle import build_trusted_signers
+
+    env = hybrid_environment
+    entries = env["credentials"]
+    recipients = {
+        "alice": entries["alice"]["public_key"],
+        "bob": entries["bob"]["public_key"],
+    }
+    initial_signers = build_trusted_signers(env["registry"])
+
+    container = encrypt_hybrid(
+        env["payload"],
+        "direct_revocation.txt",
+        recipients,
+        signing_private_key=env["signer_private_key"],
+        registry=env["registry"],
+    )
+
+    # Revoke Alice's encryption key and verify direct encrypt_hybrid & decrypt_hybrid_with_keystore fail.
+    revoke_key(
+        env["registry_path"],
+        entries["alice"]["key_id"],
+        "recipient key revoked",
+        registry_password=REGISTRY_PASSWORD,
+    )
+    reg_after_alice_revoke = load_registry(env["registry_path"], REGISTRY_PASSWORD)
+
+    with pytest.raises(KeyLifecycleError, match="revoked"):
+        encrypt_hybrid(
+            b"after revoke",
+            "after_revoke.txt",
+            recipients,
+            signing_private_key=env["signer_private_key"],
+            registry=reg_after_alice_revoke,
+        )
+
+    alice_ks_path = env["keys_dir"] / entries["alice"]["keystore_file"]
+    monkeypatch.setattr(
+        getpass,
+        "getpass",
+        lambda *_args, **_kwargs: pytest.fail("Password must not be requested for revoked key"),
+    )
+    with pytest.raises(KeyLifecycleError, match="revoked"):
+        decrypt_hybrid_with_keystore(
+            container,
+            "alice",
+            alice_ks_path,
+            trusted_signers=initial_signers,
+            registry=reg_after_alice_revoke,
+        )
+
+    # Revoke sender's Ed25519 key and verify direct encrypt_hybrid & decrypt_hybrid_with_keystore fail.
+    revoke_key(
+        env["registry_path"],
+        entries["sender"]["key_id"],
+        "signer key revoked",
+        registry_password=REGISTRY_PASSWORD,
+    )
+    reg_after_signer_revoke = load_registry(env["registry_path"], REGISTRY_PASSWORD)
+
+    with pytest.raises(KeyLifecycleError, match="revoked"):
+        encrypt_hybrid(
+            b"after signer revoke",
+            "after_signer_revoke.txt",
+            recipients,
+            signing_private_key=env["signer_private_key"],
+            registry=reg_after_signer_revoke,
+        )
+
+    bob_ks_path = env["keys_dir"] / entries["bob"]["keystore_file"]
+    with pytest.raises((KeyLifecycleError, IntegrityError)):
+        decrypt_hybrid_with_keystore(
+            container,
+            "bob",
+            bob_ks_path,
+            trusted_signers=initial_signers,
+            registry=reg_after_signer_revoke,
+        )
+def test_d6_13_direct_hybrid_vault_blocks_revoked_recipient(
+    hybrid_environment, monkeypatch
+):
+    """Verify direct hybrid_vault calls block a revoked recipient key."""
+    pytest.importorskip("ecies")
+    pytest.importorskip("coincurve")
+    from src.crypto.hybrid_vault import (
+        decrypt_hybrid_with_keystore,
+        encrypt_hybrid,
+    )
+    from src.crypto.key_lifecycle import build_trusted_signers
+
+    env = hybrid_environment
+    entries = env["credentials"]
+    recipients = {
+        "alice": entries["alice"]["public_key"],
+        "bob": entries["bob"]["public_key"],
+    }
+    trusted_signers = build_trusted_signers(env["registry"])
+
+    container = encrypt_hybrid(
+        env["payload"],
+        "direct_revoked_recipient.txt",
+        recipients,
+        signing_private_key=env["signer_private_key"],
+        registry=env["registry"],
+    )
+
+    revoke_key(
+        env["registry_path"],
+        entries["alice"]["key_id"],
+        "recipient key revoked",
+        registry_password=REGISTRY_PASSWORD,
+    )
+    updated_registry = load_registry(env["registry_path"], REGISTRY_PASSWORD)
+
+    with pytest.raises(KeyLifecycleError, match="revoked"):
+        encrypt_hybrid(
+            b"after recipient revoke",
+            "after_recipient_revoke.txt",
+            recipients,
+            signing_private_key=env["signer_private_key"],
+            registry=updated_registry,
+        )
+
+    alice_ks_path = env["keys_dir"] / entries["alice"]["keystore_file"]
+    monkeypatch.setattr(
+        getpass,
+        "getpass",
+        lambda *_args, **_kwargs: pytest.fail("Password must not be requested for revoked key"),
+    )
+    with pytest.raises(KeyLifecycleError, match="revoked"):
+        decrypt_hybrid_with_keystore(
+            container,
+            "alice",
+            alice_ks_path,
+            trusted_signers=trusted_signers,
+            registry=updated_registry,
+        )
+
+
+def test_d6_14_direct_hybrid_vault_blocks_revoked_signer(
+    hybrid_environment, monkeypatch
+):
+    """Verify direct hybrid_vault calls block a revoked Ed25519 signing key."""
+    pytest.importorskip("ecies")
+    pytest.importorskip("coincurve")
+    from src.crypto.hybrid_vault import (
+        IntegrityError,
+        decrypt_hybrid_with_keystore,
+        encrypt_hybrid,
+    )
+    from src.crypto.key_lifecycle import build_trusted_signers
+
+    env = hybrid_environment
+    entries = env["credentials"]
+    recipients = {
+        "alice": entries["alice"]["public_key"],
+        "bob": entries["bob"]["public_key"],
+    }
+    initial_signers = build_trusted_signers(env["registry"])
+
+    container = encrypt_hybrid(
+        env["payload"],
+        "direct_revoked_signer.txt",
+        recipients,
+        signing_private_key=env["signer_private_key"],
+        registry=env["registry"],
+    )
+
+    revoke_key(
+        env["registry_path"],
+        entries["sender"]["key_id"],
+        "signer key revoked",
+        registry_password=REGISTRY_PASSWORD,
+    )
+    updated_registry = load_registry(env["registry_path"], REGISTRY_PASSWORD)
+
+    with pytest.raises(KeyLifecycleError, match="revoked"):
+        encrypt_hybrid(
+            b"after signer revoke",
+            "after_signer_revoke.txt",
+            recipients,
+            signing_private_key=env["signer_private_key"],
+            registry=updated_registry,
+        )
+
+    bob_ks_path = env["keys_dir"] / entries["bob"]["keystore_file"]
+    monkeypatch.setattr(
+        getpass,
+        "getpass",
+        lambda *_args, **_kwargs: pytest.fail("Password must not be requested for revoked signer"),
+    )
+    with pytest.raises((KeyLifecycleError, IntegrityError)):
+        decrypt_hybrid_with_keystore(
+            container,
+            "bob",
+            bob_ks_path,
+            trusted_signers=initial_signers,
+            registry=updated_registry,
+        )
