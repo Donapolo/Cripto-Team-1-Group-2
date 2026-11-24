@@ -12,12 +12,16 @@ try:
         aad_from_container,
         validate_container,
         ContainerFormatError,
+        signer_id_from_ed25519_public_key,
         NONCE_SIZE,
         TAG_SIZE,
     )
     from src.crypto.key_manager import ECIESKeyManager
     from src.crypto.signature_manager import (
-        sign_container, verify_container, SignatureVerificationError,
+        sign_container,
+        verify_container,
+        public_key_from_private,
+        SignatureVerificationError,
     )
 except ModuleNotFoundError:
     from aad_builder import (
@@ -26,12 +30,16 @@ except ModuleNotFoundError:
         aad_from_container,
         validate_container,
         ContainerFormatError,
+        signer_id_from_ed25519_public_key,
         NONCE_SIZE,
         TAG_SIZE,
     )
     from key_manager import ECIESKeyManager
     from signature_manager import (
-        sign_container, verify_container, SignatureVerificationError,
+        sign_container,
+        verify_container,
+        public_key_from_private,
+        SignatureVerificationError,
     )
 
 
@@ -63,17 +71,19 @@ class HybridVault:
         recipients: Union[Dict[str, str], List[Dict[str, str]]],
         *,
         signing_private_key: str,
+        registry=None,
+        now=None,
     ) -> dict:
         """
         Encrypt and sign a D5 container. A sender's Ed25519 signing private key
         is REQUIRED: unsigned containers must never be produced.
 
         Encryption follows the existing D3 pipeline:
-        1. Generates a fresh 256-bit AES-GCM Data Encryption Key (DEK).
-        2. Encapsulates the DEK for each recipient via ECIESKeyManager (secp256k1).
-        3. Constructs canonical metadata and builds AAD binding both metadata and recipients.
-        4. Encrypts the plaintext with AES-256-GCM.
-        5. Signs the ciphertext and security-relevant metadata before returning the container.
+1. Generates a fresh 256-bit AES-GCM Data Encryption Key (DEK).
+2. Encapsulates the DEK for each recipient via ECIESKeyManager (secp256k1).
+3. Constructs canonical metadata and builds AAD binding both metadata and recipients.
+4. Encrypts the plaintext with AES-256-GCM.
+5. Signs the ciphertext and security-relevant metadata before returning the container.
         """
         if not isinstance(file_bytes, (bytes, bytearray)):
             raise TypeError("file_bytes must be raw bytes or bytearray.")
@@ -97,6 +107,13 @@ class HybridVault:
         # Security requirement: Enforce multi-recipient encryption (minimum 2 recipients)
         if len(recipients_map) < 2:
             raise ValueError("Encryption requires at least 2 distinct authorized recipients.")
+
+        _validate_lifecycle_for_encrypt(
+            registry,
+            recipients_map,
+            signing_private_key,
+            now=now,
+        )
 
         # Step 1: Generate a single-use 256-bit DEK using the OS CSPRNG
         dek = os.urandom(cls.DEK_SIZE_BYTES)
@@ -141,6 +158,9 @@ def decrypt_hybrid(
     private_key: str,
     *,
     trusted_signers: Mapping[str, str],
+    registry=None,
+    now=None,
+    recovery: bool = False,
 ) -> bytes:
     """
     Decrypt D5 ONLY after authenticating the sender's signature.
@@ -150,10 +170,10 @@ def decrypt_hybrid(
         Never build this registry from data supplied by the container.
 
     FAIL-CLOSED ORDER (D5):
-    1. Validate the structure (missing signature is rejected).
-    2. Resolve the signer's identity in the trusted registry.
-    3. Cryptographically verify the ENTIRE signed D5 payload.
-    4. Only then look up the recipient, unwrap the DEK and decrypt with AES-GCM.
+1. Validate the structure (missing signature is rejected).
+2. Resolve the signer's identity in the trusted registry.
+3. Cryptographically verify the ENTIRE signed D5 payload.
+4. Only then look up the recipient, unwrap the DEK and decrypt with AES-GCM.
     """
     try:
         validate_container(container)
@@ -173,6 +193,14 @@ def decrypt_hybrid(
         verify_container(container, trusted_public_key)
     except (SignatureVerificationError, ContainerFormatError, ValueError) as exc:
         raise IntegrityError("Signature verification failed. Container rejected.") from exc
+
+    _validate_lifecycle_for_decrypt(
+        registry,
+        container,
+        user_id,
+        now=now,
+        recovery=recovery,
+    )
 
     # Nothing that unwraps the DEK or decrypts is allowed above this line.
     recipient_entry = None
@@ -211,13 +239,17 @@ def decrypt_hybrid(
 
     return plaintext
 
+
 def decrypt_hybrid_with_keystore(
     container: dict,
     user_id: str,
     keystore_path: str,
     *,
     trusted_signers: Mapping[str, str],
-    expected_key_id: str = None
+    expected_key_id: str = None,
+    registry=None,
+    now=None,
+    recovery: bool = False,
 ) -> bytes:
     """
     D6 Integration: Fail-fast authentication before password prompt.
@@ -231,7 +263,7 @@ def decrypt_hybrid_with_keystore(
     # 2. Verificar la firma ANTES de pedir la contraseña
     if not isinstance(trusted_signers, Mapping) or not trusted_signers:
         raise IntegrityError("A non-empty trusted signer registry is required.")
-    
+
     trusted_public_key = trusted_signers.get(container.get("signer_id"))
     if not isinstance(trusted_public_key, str):
         raise IntegrityError("Unknown or untrusted document signer.")
@@ -255,40 +287,68 @@ def decrypt_hybrid_with_keystore(
     if expected_key_id is not None and expected_key_id != container_key_id:
         raise ValueError("Provided expected_key_id does not match the container's recipient key_id.")
 
+    _validate_lifecycle_for_decrypt(
+        registry,
+        container,
+        user_id,
+        container_key_id,
+        now=now,
+        recovery=recovery,
+    )
+
     # 4. Al final, pedir contraseña y cargar la llave asegurando que sea la correcta
     try:
         private_key = ECIESKeyManager.load_private_key_from_keystore(
             keystore_path, expected_key_id=container_key_id
         )
-        
+
         # 5. Descifrar
         return decrypt_hybrid(
             container=container,
             user_id=user_id,
             private_key=private_key,
-            trusted_signers=trusted_signers
+            trusted_signers=trusted_signers,
+            registry=registry,
+            now=now,
+            recovery=recovery,
         )
     finally:
-        if 'private_key' in locals():
+        if "private_key" in locals():
             del private_key
 
-def _validate_lifecycle_for_encrypt(registry, recipients_map: Dict[str, str], signing_private_key: str, now=None) -> None:
+
+def _extract_recipient_key_id(container: dict, user_id: str) -> str:
+    """Returns the recipient key_id recorded in the container for user_id."""
+    for rec in container.get("recipients", []):
+        if isinstance(rec, dict) and rec.get("id") == user_id:
+            key_id = rec.get("key_id")
+            if not isinstance(key_id, str) or not key_id:
+                raise ValueError(f"Missing key_id for user '{user_id}' in container.")
+            return key_id
+    raise ValueError(f"Access denied: User '{user_id}' is not authorized for this container.")
+
+
+def _validate_lifecycle_for_encrypt(
+    registry,
+    recipients_map: Dict[str, str],
+    signing_private_key: str,
+    now=None,
+) -> None:
     """Validate recipient and signer key states against the lifecycle registry."""
     if registry is None:
         return
     try:
         from src.crypto.key_lifecycle import check_key_usable, _id_de_publica
-        from src.crypto.signature_manager import derive_signer_id
     except ModuleNotFoundError:
         from key_lifecycle import check_key_usable, _id_de_publica
-        from signature_manager import derive_signer_id
 
     for recipient_id, pub_hex in recipients_map.items():
         entry = check_key_usable(registry, _id_de_publica(pub_hex), "encrypt_to", now=now)
         if entry.get("user_id") != recipient_id:
             raise ValueError(f"Recipient key does not belong to user '{recipient_id}'.")
 
-    signer_id = derive_signer_id(signing_private_key)
+    pub_hex = public_key_from_private(signing_private_key)
+    signer_id = signer_id_from_ed25519_public_key(bytes.fromhex(pub_hex))
     check_key_usable(registry, signer_id, "sign", now=now)
 
 
@@ -300,21 +360,22 @@ def _validate_lifecycle_for_decrypt(
     *,
     now=None,
     recovery: bool = False,
-) -> None:
+) -> str | None:
     """Validate signer and recipient key states before unlocking or decrypting."""
     if registry is None:
-        return
+        return recipient_key_id
     try:
         from src.crypto.key_lifecycle import check_key_usable
     except ModuleNotFoundError:
         from key_lifecycle import check_key_usable
 
     signer_id = container.get("signer_id")
-    if not signer_id:
+    if not isinstance(signer_id, str) or not signer_id:
         raise IntegrityError("Missing signer_id in container.")
     check_key_usable(registry, signer_id, "verify", now=now)
 
-    if recipient_key_id:
-        entry = check_key_usable(registry, recipient_key_id, "decrypt", now=now, recovery=recovery)
-        if entry.get("user_id") != user_id:
-            raise ValueError(f"Keystore/key does not belong to user '{user_id}'.")
+    resolved_key_id = recipient_key_id or _extract_recipient_key_id(container, user_id)
+    entry = check_key_usable(registry, resolved_key_id, "decrypt", now=now, recovery=recovery)
+    if entry.get("user_id") != user_id:
+        raise ValueError(f"Recipient key does not belong to user '{user_id}'.")
+    return resolved_key_id
