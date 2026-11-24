@@ -2,6 +2,9 @@
 
 Rules:
 - Fields are always hidden (Password echo mode).
+- Spaces: a password cannot be empty, only spaces, or start/end with a space.
+  It is rejected (never trimmed silently), so the user always gets exactly
+  the password they typed.
 - Optional confirmation field for NEW passwords (create profile, rotate).
 - Cancel returns None; the caller must stop the operation.
 - Messages never include the password, and the fields are cleared on close.
@@ -60,6 +63,8 @@ class PasswordDialog(QDialog):
         password = self.password_edit.text()
         if not password.strip():
             return "The password cannot be empty."
+        if password != password.strip():
+            return "The password cannot start or end with a space."
         if self._confirm and password != self.confirm_edit.text():
             return "The passwords do not match."
         return ""

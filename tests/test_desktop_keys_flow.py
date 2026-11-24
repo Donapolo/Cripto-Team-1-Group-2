@@ -259,3 +259,39 @@ def test_main_window_loads_the_keys_view(qt, tmp_path):
     window.navigate("keys")
     assert window.current_page == "keys"
     window.close()
+
+
+# ---------- review of PR #36 ----------
+
+def test_password_spaces_rule_is_explicit(qt):
+    from desktop.ui.dialogs.password_dialog import PasswordDialog
+    dialog = PasswordDialog(None, title="t", message="m")
+    for bad in ["   ", " secret", "secret ", " secret "]:
+        dialog.password_edit.setText(bad)
+        assert dialog.validation_error() != "", repr(bad)
+    dialog.password_edit.setText("my secret")  # spaces in the middle are fine
+    assert dialog.validation_error() == ""
+    assert dialog.password() == "my secret"  # returned exactly as typed
+
+
+def test_buttons_follow_lock_state_and_selection(view):
+    actions = ["rotate_btn", "revoke_btn", "backup_key_btn", "restore_key_btn", "backup_vault_btn"]
+    assert not any(getattr(view, b).isEnabled() for b in actions)  # locked
+    assert view.create_btn.isEnabled() and view.restore_vault_btn.isEnabled()
+
+    _create_alice(view, algorithm="secp256k1")
+    assert view.backup_vault_btn.isEnabled()
+    assert not view.rotate_btn.isEnabled()  # unlocked but nothing selected
+    assert not view.revoke_btn.isEnabled()
+
+    key = view._service.list_keys()[0]
+    view.select_key(key["key_id"])
+    assert all(getattr(view, b).isEnabled() for b in actions)  # active key selected
+
+    view.revoke_key(key["key_id"], "test")
+    view.select_key(key["key_id"])
+    assert not view.rotate_btn.isEnabled() and not view.revoke_btn.isEnabled()
+    assert view.backup_key_btn.isEnabled()
+
+    view.lock()
+    assert not any(getattr(view, b).isEnabled() for b in actions)

@@ -25,6 +25,13 @@ from desktop.ui.theme import named
 
 ALGORITHMS = ["both", "secp256k1", "Ed25519"]
 COLUMNS = ["User", "Algorithm", "Key ID", "Status", "Expires"]
+# The shared theme has no :disabled style, so disabled buttons looked active.
+# Only this view gets it; the team theme is not modified.
+DISABLED_STYLE = """
+QPushButton#PrimaryButton:disabled, QPushButton#SecondaryButton:disabled {
+    background: #1A2430; border: 1px solid #263343; color: #5C6B7D;
+}
+"""
 STATUS_COLORS = {"active": "#32CBA7", "retired": "#A9B9CC", "revoked": "#ef4444",
                  "expired": "#f59e0b"}
 
@@ -102,6 +109,7 @@ class KeysView(QWidget):
     # ---------- UI ----------
 
     def _build_ui(self) -> None:
+        self.setStyleSheet(DISABLED_STYLE)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(28, 22, 28, 22)
         layout.setSpacing(12)
@@ -131,6 +139,7 @@ class KeysView(QWidget):
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.verticalHeader().setVisible(False)
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.table.itemSelectionChanged.connect(self._update_buttons)
         layout.addWidget(self.table, 1)
 
         panel = named(QFrame(), "InfoPanel")
@@ -213,6 +222,19 @@ class KeysView(QWidget):
             self.lock_state.setText(f"Unlocked · {len(self._entries)} key(s)")
         self.unlock_btn.setEnabled(self._service is None)
         self.lock_btn.setEnabled(self._service is not None)
+        self._update_buttons()
+
+    def _update_buttons(self) -> None:
+        """Enable each action only when it can be used (unlocked + valid selection)."""
+        unlocked = self._service is not None
+        entry = self.selected_entry() if unlocked else None
+        status = entry.get("status") if entry else None
+        self.rotate_btn.setEnabled(status == "active")
+        self.revoke_btn.setEnabled(status in ("active", "retired"))
+        self.backup_key_btn.setEnabled(entry is not None)
+        self.restore_key_btn.setEnabled(entry is not None)
+        self.backup_vault_btn.setEnabled(unlocked)
+        # Create profile and Restore full backup also work on a locked or empty vault.
 
     def selected_entry(self) -> Optional[dict]:
         rows = self.table.selectionModel().selectedRows() if self.table.selectionModel() else []
@@ -225,6 +247,7 @@ class KeysView(QWidget):
         for row, entry in enumerate(self._entries):
             if entry.get("key_id") == key_id:
                 self.table.selectRow(row)
+                self._update_buttons()
                 return True
         return False
 
