@@ -1,7 +1,9 @@
 """Shared *non-secret* desktop state.
 
-The GUI never stores registry or keystore passwords. Views may ask the user
-for a password and create a short-lived VaultService via ``make_service``.
+DesktopContext does not hold registry or keystore passwords. Individual
+views may hold a VaultService while authenticated; the shared lock signal
+clears their cached references. A running operation cannot be interrupted
+safely in every phase, so locking is refused while crypto work is active.
 """
 
 from pathlib import Path
@@ -14,6 +16,8 @@ DEFAULT_DATA_DIR = Path.home() / ".secure-document-vault"
 
 class DesktopContext(QObject):
     data_dir_changed = Signal(str)
+    vault_lock_requested = Signal()
+    crypto_session_changed = Signal(bool)
 
     def __init__(self, data_dir: str | Path | None = None, parent: QObject | None = None):
         super().__init__(parent)
@@ -23,6 +27,10 @@ class DesktopContext(QObject):
         saved = self._settings.value("data_dir", str(DEFAULT_DATA_DIR))
         initial = saved if data_dir is None else data_dir
         self._data_dir = self._normalize(initial)
+        # Busy state is non-secret; it prevents presenting an in-flight crypto
+        # operation as if it had been cancelled by the Lock action.
+        self._crypto_busy = False
+        self._crypto_unlocked = False
 
     @staticmethod
     def _normalize(value: str | Path) -> Path:
@@ -34,6 +42,23 @@ class DesktopContext(QObject):
     @property
     def data_dir(self) -> Path:
         return self._data_dir
+
+    @property
+    def crypto_busy(self) -> bool:
+        return self._crypto_busy
+
+    def set_crypto_busy(self, busy: bool) -> None:
+        self._crypto_busy = bool(busy)
+
+    @property
+    def crypto_unlocked(self) -> bool:
+        return self._crypto_unlocked
+
+    def set_crypto_unlocked(self, unlocked: bool) -> None:
+        unlocked = bool(unlocked)
+        if unlocked != self._crypto_unlocked:
+            self._crypto_unlocked = unlocked
+            self.crypto_session_changed.emit(unlocked)
 
     @property
     def registry_exists(self) -> bool:
