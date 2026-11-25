@@ -1,47 +1,38 @@
 import json
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QPushButton, 
-    QLabel, QFileDialog, QLineEdit, QTextEdit, QMessageBox
+    QWidget, QVBoxLayout, QPushButton, QLabel, 
+    QFileDialog, QTextEdit, QMessageBox
 )
-from src.crypto.hybrid_vault import verify_container
-from src.crypto.signature_manager import SignatureVerificationError
+from desktop.ui.dialogs.password_dialog import ask_password, PasswordCancelled
+from src.crypto.signature_manager import verify_container_with_registry, SignatureVerificationError
+from src.crypto.key_lifecycle import KeyLifecycleError
 
 class SignaturesView(QWidget):
-    def __init__(self):
-        super().__init__()
+    def __init__(self, context, parent=None):
+        super().__init__(parent)
+        self.context = context
         self.container_data = None
         self.init_ui()
 
     def init_ui(self):
         layout = QVBoxLayout(self)
-
-        # Title
-        title = QLabel("Signature Verification (D5/D6)")
+        
+        title = QLabel("Signature & D6 Registry Verification")
         title.setStyleSheet("font-size: 18px; font-weight: bold; margin-bottom: 10px;")
         layout.addWidget(title)
 
-        # Add File Buttom
-        self.btn_load = QPushButton("Load D5 Container (.json)")
+        self.btn_load = QPushButton("1. Load D5 Container (.json)")
         self.btn_load.clicked.connect(self.load_container)
         layout.addWidget(self.btn_load)
 
-        # File status label
         self.lbl_file_status = QLabel("No container loaded.")
         layout.addWidget(self.lbl_file_status)
 
-        # Input for the trusted signer's public key (Trust Anchor)
-        layout.addWidget(QLabel("Trusted Signer Public Key (Hex):"))
-        self.txt_pubkey = QLineEdit()
-        self.txt_pubkey.setPlaceholderText("Paste the trusted Ed25519 public key here...")
-        layout.addWidget(self.txt_pubkey)
-
-        # verify button
-        self.btn_verify = QPushButton("Verify Signature")
+        self.btn_verify = QPushButton("2. Verify Signature & D6 Status")
         self.btn_verify.setEnabled(False)
         self.btn_verify.clicked.connect(self.verify_signature)
         layout.addWidget(self.btn_verify)
 
-        # results display
         layout.addWidget(QLabel("Verification Results:"))
         self.txt_results = QTextEdit()
         self.txt_results.setReadOnly(True)
@@ -51,11 +42,9 @@ class SignaturesView(QWidget):
         file_path, _ = QFileDialog.getOpenFileName(self, "Open D5 Container", "", "JSON Files (*.json)")
         if not file_path:
             return
-
         try:
             with open(file_path, "r", encoding="utf-8") as f:
                 self.container_data = json.load(f)
-            
             self.lbl_file_status.setText(f"Loaded: {file_path.split('/')[-1]}")
             self.btn_verify.setEnabled(True)
             self.txt_results.clear()
@@ -69,26 +58,50 @@ class SignaturesView(QWidget):
         if not self.container_data:
             return
 
-        pubkey = self.txt_pubkey.text().strip()
-        if not pubkey:
-            QMessageBox.warning(self, "Warning", "Please provide the trusted signer public key.")
+        # 1. Pedimos la contraseña del registro usando el diálogo de Yuki
+        password = ask_password(
+            self, 
+            title="Registry Password", 
+            message="Enter the password to unlock the D6 Registry and check the signer's status:"
+        )
+        
+        if password is None:  # El usuario canceló
             return
 
         try:
-            # call to backend function to verify the signature
-            verify_container(self.container_data, pubkey)
+            # 2. Creamos el servicio (esto valida la contraseña del registro)
+            service = self.context.make_service(password)
+            registry = service.registry()
+            
+            # 3. Verificamos firma y estado D6
+            verify_container_with_registry(registry, self.container_data)
             
             signer_id = self.container_data.get("signer_id", "Unknown")
             self.txt_results.setHtml(f"""
                 <h3 style='color: green;'>✅ Signature Valid</h3>
                 <p><b>Signer ID:</b> {signer_id}</p>
-                <p>The document signature is authentic and matches the provided public key.</p>
+                <p>The signature is authentic and the signer is active in the D6 registry.</p>
+            """)
+        except KeyLifecycleError as e:
+            # Captura errores de llave revocada, expirada o contraseña incorrecta del registro
+            msg = str(e)
+            if "integrity check failed" in msg.lower() or "wrong password" in msg.lower():
+                title = "❌ Registry Unlock Failed"
+                desc = "Incorrect registry password or file was modified."
+            else:
+                title = "❌ Signer Rejected (D6 Policy)"
+                desc = "The signer key may be revoked or expired."
+            
+            self.txt_results.setHtml(f"""
+                <h3 style='color: red;'>{title}</h3>
+                <p><b>Reason:</b> {msg}</p>
+                <p>{desc}</p>
             """)
         except SignatureVerificationError as e:
             self.txt_results.setHtml(f"""
-                <h3 style='color: red;'>❌ Signature Invalid</h3>
+                <h3 style='color: red;'>❌ Invalid Signature</h3>
                 <p><b>Reason:</b> {str(e)}</p>
-                <p>The container may have been tampered with, or the public key is incorrect.</p>
+                <p>The document has been tampered with or forged.</p>
             """)
         except Exception as e:
             self.txt_results.setHtml(f"<h3 style='color: orange;'>⚠ Error</h3><p>{str(e)}</p>")

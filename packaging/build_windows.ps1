@@ -26,6 +26,7 @@ pyinstaller --noconfirm --onedir --windowed `
     --hidden-import "cryptography" `
     --hidden-import "ecies" `
     --hidden-import "coincurve" `
+    --collect-all "desktop" `
     desktop/__main__.py
 
 Write-Host "Build Complete!" -ForegroundColor Green

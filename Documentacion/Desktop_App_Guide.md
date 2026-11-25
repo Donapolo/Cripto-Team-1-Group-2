@@ -15,16 +15,16 @@ This application provides a Graphical User Interface (GUI) for the Secure Docume
 5. Run the app: `python -m desktop`
 
 ## Local Data Storage
-By default, the application stores its keystores, configurations, and local vault in:
-`C:\Users\<YourUsername>\.secure_vault\`
-*(Ensure this directory is never committed to the repository).*
+By default, the application stores its encrypted keystores, configurations, and the D6 registry in the user's local AppData folder. The specific path is dynamically managed by `DesktopContext` using `QSettings` (Group: `Cripto-Team-1-Group-2`). 
+*(Note: Data is intentionally kept outside the repository for security. You can change the directory via the "Settings" view).*
 
 ## Features
 - **Home**: Dashboard and local environment status.
 - **Documents**: Select and stage local files for operations.
 - **Encrypt/Decrypt**: Multi-recipient encryption (min 2) and secure decryption.
-- **My Keys**: Manage your identities, backup and restore keystores.
-- **Signatures**: Verify D5 signed containers against trusted public keys.
+- **My Keys**: *(Status: Under development by Yuki)* Will allow key rotation, revocation, and backup management in the next iteration.
+- **Signatures**: Verify D5 signed containers against the live D6 revocation registry.
+
 
 ## Packaging for Windows (Production)
 To generate a standalone executable, run the following in PowerShell (Administrator):
