@@ -70,15 +70,35 @@ class CryptoView(QWidget):
         self.refresh_identities()
 
         if self.context is not None:
+            self.context.set_crypto_unlocked(self._vault_service is not None)
             self.context.data_dir_changed.connect(self._on_data_dir_changed)
+            self.context.vault_lock_requested.connect(self.lock_vault)
 
     def _on_data_dir_changed(self, _path: str) -> None:
+        self.lock_vault()
+
+    def lock_vault(self) -> None:
+        """Forget authenticated registry state for subsequent operations.
+
+        Lock is allowed only when no crypto job is running (enforced by My Keys).
+        This also clears editable identity selectors: they must not look like
+        authenticated, loaded identities after the vault has been locked.
+        """
         self._vault_service = None
+        if self.context is not None:
+            self.context.set_crypto_unlocked(False)
         self.refresh_identities()
+        for combo in (self._enc_signer_combo, self._enc_rec1_combo,
+                      self._enc_rec2_combo, self._enc_rec3_combo,
+                      self._dec_user_combo):
+            combo.clear()
+            combo.setEditText("")
 
     def set_vault_service(self, vault_service: Optional[VaultService]) -> None:
         """Assign or update the VaultService instance used by the view."""
         self._vault_service = vault_service
+        if self.context is not None:
+            self.context.set_crypto_unlocked(vault_service is not None)
         self.refresh_identities()
 
     def set_password_provider(self, password_provider: Optional[Callable[[dict], str]]) -> None:
@@ -130,6 +150,8 @@ class CryptoView(QWidget):
             return None
 
         self._vault_service = service
+        if self.context is not None:
+            self.context.set_crypto_unlocked(True)
         self.refresh_identities()
         return service
 
@@ -505,5 +527,7 @@ class CryptoView(QWidget):
         self._set_busy(False)
 
     def _set_busy(self, busy: bool) -> None:
+        if self.context is not None:
+            self.context.set_crypto_busy(busy)
         self._encrypt_btn.setEnabled(not busy)
         self._decrypt_btn.setEnabled(not busy)

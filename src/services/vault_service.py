@@ -10,7 +10,13 @@ import os
 from pathlib import Path
 from typing import Callable
 
-from src.crypto.key_backup import create_backup, restore_backup, verify_backup
+from src.crypto.key_backup import (
+    create_backup,
+    create_vault_backup,
+    restore_backup,
+    restore_vault_backup,
+    verify_backup,
+)
 from src.crypto.key_lifecycle import (
     KeyLifecycleError,
     build_trusted_signers,
@@ -188,3 +194,25 @@ class VaultService:
             raise KeyLifecycleError("Backup identity does not match the trusted registry.")
         return restore_backup(backup, self.keystore_dir / entry["keystore_file"],
                               expected_key_id=key_id, overwrite=False)
+
+    # ---- respaldo completo (Yuki): registro + keystores ----
+
+    def create_vault_backup(self, backup_dir: str | Path, *, overwrite: bool = False) -> dict:
+        """Full backup: authenticated registry (with its state history) + every keystore.
+
+        All-or-nothing: if any keystore is missing or invalid, nothing is written.
+        """
+        return create_vault_backup(self.registry_path, self.keystore_dir, backup_dir,
+                                   registry_password=self.registry_password,
+                                   overwrite=overwrite)
+
+    def restore_vault_backup(self, backup_dir: str | Path, *, overwrite: bool = False) -> dict:
+        """Full restore. Everything is checked before writing.
+
+        An older backup can never undo a later rotation or revocation of the
+        current registry. If a write fails and the rollback is incomplete, the
+        error lists the files that must be recovered manually.
+        """
+        return restore_vault_backup(backup_dir, self.registry_path, self.keystore_dir,
+                                    registry_password=self.registry_password,
+                                    overwrite=overwrite)
