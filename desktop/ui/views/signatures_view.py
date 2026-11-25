@@ -3,7 +3,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QPushButton, QLabel, 
     QFileDialog, QTextEdit, QMessageBox
 )
-from desktop.ui.dialogs.password_dialog import ask_password, PasswordCancelled
+from desktop.ui.dialogs.password_dialog import ask_password
 from src.crypto.signature_manager import verify_container_with_registry, SignatureVerificationError
 from src.crypto.key_lifecycle import KeyLifecycleError
 
@@ -58,32 +58,28 @@ class SignaturesView(QWidget):
         if not self.container_data:
             return
 
-        # 1. Pedimos la contraseña del registro usando el diálogo de Yuki
         password = ask_password(
             self, 
             title="Registry Password", 
             message="Enter the password to unlock the D6 Registry and check the signer's status:"
         )
         
-        if password is None:  # El usuario canceló
+        if password is None:
             return
 
         try:
-            # 2. Creamos el servicio (esto valida la contraseña del registro)
             service = self.context.make_service(password)
             registry = service.registry()
             
-            # 3. Verificamos firma y estado D6
             verify_container_with_registry(registry, self.container_data)
             
             signer_id = self.container_data.get("signer_id", "Unknown")
             self.txt_results.setHtml(f"""
                 <h3 style='color: green;'>✅ Signature Valid</h3>
                 <p><b>Signer ID:</b> {signer_id}</p>
-                <p>The signature is authentic and the signer is active in the D6 registry.</p>
+                <p>The signature is authentic and the signer is authorized in the D6 registry.</p>
             """)
         except KeyLifecycleError as e:
-            # Captura errores de llave revocada, expirada o contraseña incorrecta del registro
             msg = str(e)
             if "integrity check failed" in msg.lower() or "wrong password" in msg.lower():
                 title = "❌ Registry Unlock Failed"

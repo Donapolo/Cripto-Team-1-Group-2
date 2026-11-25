@@ -1,7 +1,6 @@
 import pytest
 from unittest.mock import MagicMock
 
-# CORRECCIÓN: importorskip ANTES de importar PySide6
 pytest.importorskip("PySide6")
 
 from PySide6.QtWidgets import QApplication, QMainWindow, QStackedWidget
@@ -18,32 +17,24 @@ def qapp():
 
 @pytest.fixture
 def mock_context():
-    """Mock the DesktopContext and VaultService using standard MagicMock."""
     context = MagicMock()
     mock_service = MagicMock()
-    # Simulamos que el registro se carga correctamente
     mock_service.registry.return_value = {"version": "1.0", "keys": {}}
     context.make_service.return_value = mock_service
     return context
 
 @pytest.fixture(autouse=True)
 def mock_ask_password(monkeypatch):
-    """Simula que el usuario escribe la contraseña y da clic en Aceptar."""
-    # Usamos monkeypatch nativo de pytest para interceptar el diálogo
     monkeypatch.setattr("desktop.ui.views.signatures_view.ask_password", lambda *args, **kwargs: "mocked_password")
 
 def test_signatures_view_initialization(qapp, mock_context):
-    """Smoke test: Ensure the SignaturesView opens without crashing."""
     view = SignaturesView(context=mock_context, parent=None)
     assert view is not None
     assert view.btn_verify.isEnabled() is False
 
 def test_signature_valid(qapp, mock_context, monkeypatch):
-    """Test that a valid signature shows success."""
     view = SignaturesView(context=mock_context)
     view.container_data = {"signer_id": "test123"}
-    
-    # Interceptamos la verificación estricta para que devuelva True
     monkeypatch.setattr("desktop.ui.views.signatures_view.verify_container_with_registry", lambda *args: True)
     
     view.verify_signature()
@@ -51,7 +42,6 @@ def test_signature_valid(qapp, mock_context, monkeypatch):
     mock_context.make_service.assert_called_once_with("mocked_password")
 
 def test_signature_tampered(qapp, mock_context, monkeypatch):
-    """Test that a tampered signature is rejected."""
     view = SignaturesView(context=mock_context)
     view.container_data = {"signer_id": "test123"}
     
@@ -65,7 +55,6 @@ def test_signature_tampered(qapp, mock_context, monkeypatch):
     assert "Tampered container" in view.txt_results.toHtml()
 
 def test_signature_revoked(qapp, mock_context, monkeypatch):
-    """Test that a revoked signer is rejected by D6 policy."""
     view = SignaturesView(context=mock_context)
     view.container_data = {"signer_id": "revoked_user"}
     
@@ -79,7 +68,6 @@ def test_signature_revoked(qapp, mock_context, monkeypatch):
     assert "Key is revoked." in view.txt_results.toHtml()
 
 def test_main_window_integration(qapp, mock_context):
-    """Test integration simulating MainWindow behavior."""
     main_window = QMainWindow()
     stack = QStackedWidget()
     sig_view = SignaturesView(context=mock_context, parent=main_window)
