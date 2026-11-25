@@ -1,8 +1,9 @@
 """My Keys view (Yuki): identities, key status, rotation, revocation and backups.
 
 The view never implements cryptography: every operation goes through VaultService.
-It never shows or stores private keys or passwords; passwords are requested with
-the shared PasswordDialog only when an operation needs them.
+It never displays private keys. The VaultService held while unlocked retains
+its registry password in process memory, so Lock releases cached service
+references in both the key and encrypt/decrypt views.
 """
 
 from __future__ import annotations
@@ -104,6 +105,7 @@ class KeysView(QWidget):
         self._build_ui()
         if context is not None:
             context.data_dir_changed.connect(self._on_data_dir_changed)
+            context.crypto_session_changed.connect(self._on_crypto_session_changed)
         self.refresh()
 
     # ---------- UI ----------
@@ -127,8 +129,9 @@ class KeysView(QWidget):
         layout.addLayout(top)
 
         note = named(QLabel(
-            "Private keys are never shown. Passwords are asked only when an operation "
-            "needs them and are not stored."), "MutedText")
+            "Private keys are never shown. Registry credentials remain in process "
+            "memory while a module is unlocked. Lock releases cached services "
+            "in My Keys and Encrypt / Decrypt; keystore passwords are requested as needed."), "MutedText")
         note.setWordWrap(True)
         layout.addWidget(note)
 
@@ -185,13 +188,32 @@ class KeysView(QWidget):
             return Path(self._service.registry_path).is_file()
         return self.context is not None and self.context.registry_exists
 
-    def _on_data_dir_changed(self, _path: str) -> None:
-        self.lock()
-
-    def lock(self) -> None:
-        """Forget the service (and its registry password reference)."""
-        self._service = None
+    def _on_crypto_session_changed(self, _unlocked: bool) -> None:
         self.refresh()
+
+    def _on_data_dir_changed(self, _path: str) -> None:
+        # A data-folder change must discard the old credentials even if an
+        # operation has already started; the operation may still finish with
+        # its previously captured service.
+        self.lock(force=True)
+
+    def lock(self, *, force: bool = False) -> bool:
+        """Lock the whole UI session, not only the My Keys page.
+
+        A running encrypt/decrypt worker holds its own VaultService reference.
+        Locking must not falsely imply that this operation was interrupted.
+        """
+        if not force and self.context is not None and self.context.crypto_busy:
+            self._fail("lock", "Wait for the current encrypt/decrypt operation to "
+                               "finish before locking the vault.")
+            return False
+        self._service = None
+        if self.context is not None:
+            self.context.vault_lock_requested.emit()
+        self.refresh()
+        self.status_badge.setText("Locked")
+        self.status_badge.setStyleSheet("font-weight: 600;")
+        return True
 
     def refresh(self) -> None:
         self._entries = []
@@ -215,13 +237,17 @@ class KeysView(QWidget):
                     item.setBackground(QBrush(QColor(STATUS_COLORS.get(status, "#334253"))))
                 item.setData(Qt.ItemDataRole.UserRole, entry.get("key_id", ""))
                 self.table.setItem(row, col, item)
+        crypto_unlocked = self.context is not None and self.context.crypto_unlocked
         if self._service is None:
-            self.lock_state.setText("Locked" if self._registry_exists()
-                                    else "No vault in this folder yet")
+            self.lock_state.setText(
+                "Unlocked in Encrypt / Decrypt" if crypto_unlocked
+                else ("Locked" if self._registry_exists()
+                      else "No vault in this folder yet")
+            )
         else:
             self.lock_state.setText(f"Unlocked · {len(self._entries)} key(s)")
         self.unlock_btn.setEnabled(self._service is None)
-        self.lock_btn.setEnabled(self._service is not None)
+        self.lock_btn.setEnabled(self._service is not None or crypto_unlocked)
         self._update_buttons()
 
     def _update_buttons(self) -> None:

@@ -2,9 +2,10 @@
 
 Rules:
 - Fields are always hidden (Password echo mode).
-- Spaces: a password cannot be empty, only spaces, or start/end with a space.
-  It is rejected (never trimmed silently), so the user always gets exactly
-  the password they typed.
+- Existing passwords are accepted exactly as typed, including leading/trailing
+  spaces and even whitespace-only secrets. This preserves CLI compatibility.
+- New passwords must not be blank, whitespace-only or start/end with a
+  space; confirmation must match exactly. Passwords are never normalized.
 - Optional confirmation field for NEW passwords (create profile, rotate).
 - Cancel returns None; the caller must stop the operation.
 - Messages never include the password, and the fields are cleared on close.
@@ -61,10 +62,14 @@ class PasswordDialog(QDialog):
     def validation_error(self) -> str:
         """Empty string if the input is valid; otherwise a message without secrets."""
         password = self.password_edit.text()
-        if not password.strip():
+        # The CLI/backend accepts whitespace in passwords. Do not normalize
+        # existing secrets: an extra/leading space is part of the credential.
+        if not password:
             return "The password cannot be empty."
-        if password != password.strip():
-            return "The password cannot start or end with a space."
+        if self._confirm and not password.strip():
+            return "A new password cannot consist only of spaces."
+        if self._confirm and password != password.strip():
+            return "A new password cannot start or end with a space."
         if self._confirm and password != self.confirm_edit.text():
             return "The passwords do not match."
         return ""

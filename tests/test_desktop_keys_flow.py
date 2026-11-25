@@ -263,15 +263,120 @@ def test_main_window_loads_the_keys_view(qt, tmp_path):
 
 # ---------- review of PR #36 ----------
 
-def test_password_spaces_rule_is_explicit(qt):
+def test_existing_passwords_preserve_whitespace_exactly(qt):
     from desktop.ui.dialogs.password_dialog import PasswordDialog
     dialog = PasswordDialog(None, title="t", message="m")
-    for bad in ["   ", " secret", "secret ", " secret "]:
-        dialog.password_edit.setText(bad)
-        assert dialog.validation_error() != "", repr(bad)
-    dialog.password_edit.setText("my secret")  # spaces in the middle are fine
+    for secret in ["   ", " secret", "secret ", " secret ", "my secret"]:
+        dialog.password_edit.setText(secret)
+        assert dialog.validation_error() == "", repr(secret)
+        assert dialog.password() == secret  # never strip or normalize
+    dialog.password_edit.setText("")
+    assert dialog.validation_error() == "The password cannot be empty."
+
+
+def test_new_password_enforces_spacing_and_exact_confirmation(qt):
+    from desktop.ui.dialogs.password_dialog import PasswordDialog
+    dialog = PasswordDialog(None, title="t", message="m", confirm=True)
+    for weak in ["   ", " secret", "secret ", " secret "]:
+        dialog.password_edit.setText(weak)
+        dialog.confirm_edit.setText(weak)
+        assert dialog.validation_error() != "", repr(weak)
+    dialog.password_edit.setText("secret phrase")
+    dialog.confirm_edit.setText("secret phrase ")
+    assert dialog.validation_error() == "The passwords do not match."
+    dialog.confirm_edit.setText("secret phrase")
     assert dialog.validation_error() == ""
-    assert dialog.password() == "my secret"  # returned exactly as typed
+
+
+def test_existing_registry_with_spaces_unlocks_in_gui(qt, tmp_path):
+    from desktop.context import DesktopContext
+    from desktop.ui.views.keys_view import KeysView
+    secret = "  registry secret  "
+    data_dir = tmp_path / "vault"
+    VaultService(data_dir, secret).init_user("alice", KEY_PW, algorithm="Ed25519")
+    view = KeysView(DesktopContext(data_dir=data_dir))
+    assert view.unlock(secret)
+    assert view.unlocked
+    view.lock()
+    assert not view.unlocked
+
+
+def test_keys_lock_clears_crypto_session_and_selectors(qt, tmp_path):
+    from desktop.app import create_window
+    from desktop.ui.views.crypto_view import CryptoView
+    _app, window = create_window(tmp_path / "vault")
+    keys = window._pages["keys"]
+    crypto = window._pages["crypto"]
+    assert isinstance(crypto, CryptoView)
+    service = VaultService(tmp_path / "vault", REG_PW)
+    service.init_user("alice", KEY_PW)
+    service.init_user("bob", KEY_PW)
+    assert keys.unlock(REG_PW)
+    crypto.set_vault_service(service)
+    assert crypto._vault_service is not None
+    assert crypto._enc_signer_combo.count() > 0
+    assert keys.lock()
+    assert not keys.unlocked
+    assert crypto._vault_service is None
+    assert crypto._enc_signer_combo.currentText() == ""
+    assert crypto._enc_rec1_combo.currentText() == ""
+    assert crypto._dec_user_combo.currentText() == ""
+    window.close()
+
+
+def test_my_keys_can_lock_crypto_only_session(qt, tmp_path):
+    from desktop.app import create_window
+    _app, window = create_window(tmp_path / "vault")
+    keys = window._pages["keys"]
+    crypto = window._pages["crypto"]
+    service = VaultService(tmp_path / "vault", REG_PW)
+    service.init_user("alice", KEY_PW)
+    crypto.set_vault_service(service)
+    assert not keys.unlocked  # Only Encrypt / Decrypt was unlocked.
+    assert keys.lock_btn.isEnabled()
+    assert keys.lock_state.text() == "Unlocked in Encrypt / Decrypt"
+    assert keys.lock()
+    assert crypto._vault_service is None
+    assert not keys.lock_btn.isEnabled()
+    window.close()
+
+
+def test_switching_data_folder_locks_both_modules(qt, tmp_path):
+    from desktop.app import create_window
+    _app, window = create_window(tmp_path / "vault")
+    keys = window._pages["keys"]
+    crypto = window._pages["crypto"]
+    service = VaultService(tmp_path / "vault", REG_PW)
+    service.init_user("alice", KEY_PW)
+    assert keys.unlock(REG_PW)
+    crypto.set_vault_service(service)
+    window.context.set_data_dir(tmp_path / "another_vault")
+    assert not keys.unlocked
+    assert crypto._vault_service is None
+    assert not window.context.crypto_unlocked
+    window.close()
+
+
+def test_lock_refused_during_active_crypto_operation(qt, tmp_path):
+    from desktop.app import create_window
+    _app, window = create_window(tmp_path / "vault")
+    keys = window._pages["keys"]
+    crypto = window._pages["crypto"]
+    service = VaultService(tmp_path / "vault", REG_PW)
+    service.init_user("alice", KEY_PW)
+    assert keys.unlock(REG_PW)
+    crypto.set_vault_service(service)
+    crypto._set_busy(True)  # simulate an in-flight worker
+    try:
+        assert not keys.lock()
+        assert keys.unlocked
+        assert crypto._vault_service is service
+        assert "Wait for" in keys.log.toPlainText()
+    finally:
+        crypto._set_busy(False)
+    assert keys.lock()
+    assert crypto._vault_service is None
+    window.close()
 
 
 def test_buttons_follow_lock_state_and_selection(view):
