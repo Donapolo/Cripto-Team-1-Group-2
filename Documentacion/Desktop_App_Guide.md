@@ -1,7 +1,7 @@
 # Secure Document Vault - Desktop App Guide
 
 ## Overview
-This application provides a Graphical User Interface (GUI) for the Secure Document Vault engine (D2-D6). It allows users to encrypt, decrypt, manage keys, and verify document signatures using a PySide6 interface.
+This application provides a Graphical User Interface (GUI) for the Secure Document Vault engine . It allows users to encrypt, decrypt, manage keys, and verify document signatures using a PySide6 interface.
 
 ## Prerequisites
 - Python 3.10 or higher
