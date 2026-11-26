@@ -6,7 +6,7 @@ from PySide6.QtWidgets import QApplication
 
 from desktop.context import DesktopContext
 from desktop.ui.main_window import MainWindow
-from desktop.ui.theme import apply_theme
+from desktop.ui.theme import COLORS, apply_theme, icon
 
 
 def create_window(data_dir=None) -> tuple[QApplication, MainWindow]:
@@ -15,6 +15,7 @@ def create_window(data_dir=None) -> tuple[QApplication, MainWindow]:
     if app is None:
         app = QApplication(sys.argv)
     apply_theme(app)
+    app.setWindowIcon(icon("shield", COLORS["accent"], 256))
     context = DesktopContext(data_dir=data_dir)
     window = MainWindow(context)
     # Keep the context alive as long as the window exists.
@@ -23,6 +24,10 @@ def create_window(data_dir=None) -> tuple[QApplication, MainWindow]:
 
 
 def main() -> int:
+    if sys.platform == "win32":
+        # Show our icon in the taskbar instead of the Python one.
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("SecureDocumentVault")
     app, window = create_window()
     window.show()
     return app.exec()
